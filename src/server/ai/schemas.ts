@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { ContentNiche, GeneratedContent } from '@/lib/types';
+import type { GeneratedContent } from '@/lib/types';
+import { NICHES } from '@/lib/niches';
 
 /**
  * Schemas for structured LLM output.
@@ -10,24 +11,7 @@ import type { ContentNiche, GeneratedContent } from '@/lib/types';
  * job. Validation failures are treated as provider errors and retried.
  */
 
-export const NICHES = [
-  'scary-story',
-  'mystery',
-  'reddit-story',
-  'educational',
-  'motivational',
-  'gaming',
-  'football',
-  'history',
-  'finance',
-  'business',
-  'technology',
-  'science',
-  'documentary',
-  'product-review',
-  'news-summary',
-  'storytelling',
-] as const satisfies readonly ContentNiche[];
+export { NICHES } from '@/lib/niches';
 
 export const nicheSchema = z.enum(NICHES);
 

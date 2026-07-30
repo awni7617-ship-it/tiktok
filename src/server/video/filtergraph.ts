@@ -1,6 +1,5 @@
 import type {
   AudioPlan,
-  CaptionStyle,
   CropKeyframe,
   EditPlan,
   ExportPreset,

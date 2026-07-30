@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ContentNiche, RegionOfInterest, Transcript, TranscriptSegment, TranscriptWord } from '@/lib/types';
 import { estimateSpeechDuration, sentences } from '@/lib/text';
+import { VOICES } from '@/lib/voices';
 import { round } from '@/lib/time';
 import { shortHash } from '@/lib/id';
 import {
@@ -627,7 +628,7 @@ export class MockTtsProvider implements TtsProvider {
   readonly name = 'mock';
 
   async listVoices(): Promise<Voice[]> {
-    return MOCK_VOICES;
+    return VOICES;
   }
 
   /**
@@ -707,14 +708,7 @@ export function distributeWordTimings(
   });
 }
 
-export const MOCK_VOICES: Voice[] = [
-  { id: 'voice_atlas', name: 'Atlas', locale: 'en-US', gender: 'male', style: 'Deep, documentary narrator' },
-  { id: 'voice_nova', name: 'Nova', locale: 'en-US', gender: 'female', style: 'Bright, conversational' },
-  { id: 'voice_ember', name: 'Ember', locale: 'en-GB', gender: 'female', style: 'Warm, storytelling' },
-  { id: 'voice_slate', name: 'Slate', locale: 'en-GB', gender: 'male', style: 'Calm, explainer' },
-  { id: 'voice_pulse', name: 'Pulse', locale: 'en-US', gender: 'neutral', style: 'Fast, high-energy' },
-  { id: 'voice_hollow', name: 'Hollow', locale: 'en-US', gender: 'male', style: 'Low, unsettling' },
-];
+export { VOICES as MOCK_VOICES } from '@/lib/voices';
 
 // ---------------------------------------------------------------------------
 // Mock image generation — writes a real PNG
