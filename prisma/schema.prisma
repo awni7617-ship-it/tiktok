@@ -1,0 +1,497 @@
+// Phantom — data model.
+//
+// Design notes:
+//  - Every tenant-scoped row carries `workspaceId` so authorization is a single
+//    indexed predicate rather than a join walk.
+//  - Analysis artifacts (transcripts, edit plans, reports) are stored as JSON.
+//    They are versioned documents read as a unit, never queried field-by-field,
+//    and their shape is owned by the TypeScript types in src/lib/types.ts.
+//  - Deletes cascade from the workspace down, so account deletion is one call.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & tenancy
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String   @id
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  name          String
+  avatarUrl     String?
+  passwordHash  String
+  // Argon2id/scrypt parameters travel with the hash so they can be upgraded
+  // per-user without invalidating existing passwords.
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastLoginAt   DateTime?
+
+  memberships Membership[]
+  sessions    Session[]
+  comments    Comment[]
+  auditLogs   AuditLog[]
+
+  @@index([createdAt])
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  // SHA-256 of the token; the raw value only ever exists in the user's cookie.
+  tokenHash String   @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Workspace {
+  id        String   @id
+  name      String
+  slug      String   @unique
+  plan      String   @default("free")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships    Membership[]
+  projects       Project[]
+  assets         MediaAsset[]
+  socialAccounts SocialAccount[]
+  posts          Post[]
+  templates      Template[]
+  brandKits      BrandKit[]
+  jobs           Job[]
+  auditLogs      AuditLog[]
+  campaigns      Campaign[]
+
+  @@index([slug])
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  EDITOR
+  REVIEWER
+  VIEWER
+}
+
+model Membership {
+  id          String   @id
+  userId      String
+  workspaceId String
+  role        Role     @default(EDITOR)
+  createdAt   DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+// ---------------------------------------------------------------------------
+// Projects & media
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  DRAFT
+  ANALYZING
+  READY
+  RENDERING
+  RENDERED
+  PUBLISHED
+  FAILED
+}
+
+enum ProjectKind {
+  UPLOAD
+  GENERATED
+  FACELESS
+}
+
+model Project {
+  id          String        @id
+  workspaceId String
+  createdById String
+  title       String
+  description String?
+  kind        ProjectKind   @default(UPLOAD)
+  status      ProjectStatus @default(DRAFT)
+  niche       String?
+  /// GeneratedContent — title, hook, script, scenes, hashtags, CTA.
+  content     Json?
+  /// EditPlan — cuts, captions, reframe, motion, audio and video plans.
+  editPlan    Json?
+  /// OptimizationReport — score, sub-scores and suggestions.
+  report      Json?
+  /// Per-project pipeline options, merged over the defaults.
+  settings    Json?
+  errorMessage String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  assets    MediaAsset[]
+  renders   Render[]
+  posts     Post[]
+  comments  Comment[]
+  versions  ProjectVersion[]
+  jobs      Job[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, createdAt])
+}
+
+/// Immutable snapshot of a project, written before every destructive change.
+model ProjectVersion {
+  id        String   @id
+  projectId String
+  label     String
+  /// Full project document at this point in time.
+  snapshot  Json
+  createdById String
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+enum AssetKind {
+  SOURCE_VIDEO
+  SOURCE_AUDIO
+  IMAGE
+  BROLL
+  MUSIC
+  VOICEOVER
+  THUMBNAIL
+  PROXY
+  WAVEFORM
+  SUBTITLE
+}
+
+model MediaAsset {
+  id          String    @id
+  workspaceId String
+  projectId   String?
+  kind        AssetKind
+  filename    String
+  /// Storage key, resolved by the configured storage driver.
+  storageKey  String
+  mimeType    String
+  sizeBytes   BigInt
+  durationSec Float?
+  width       Int?
+  height      Int?
+  /// MediaProbe output plus any provider metadata.
+  metadata    Json?
+  /// Transcript document, when the asset has been transcribed.
+  transcript  Json?
+  checksum    String?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, kind])
+  @@index([projectId])
+  @@index([checksum])
+}
+
+enum RenderStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Render {
+  id          String       @id
+  projectId   String
+  presetId    String
+  status      RenderStatus @default(QUEUED)
+  progress    Float        @default(0)
+  storageKey  String?
+  thumbnailKey String?
+  durationSec Float?
+  sizeBytes   BigInt?
+  width       Int?
+  height      Int?
+  /// The exact ffmpeg invocation, retained for support and reproducibility.
+  command     String?
+  errorMessage String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime     @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  posts   Post[]
+
+  @@index([projectId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Social publishing
+// ---------------------------------------------------------------------------
+
+model SocialAccount {
+  id            String   @id
+  workspaceId   String
+  platform      String
+  /// Platform-side account identifier.
+  externalId    String
+  displayName   String
+  username      String?
+  avatarUrl     String?
+  /// AES-256-GCM ciphertext. Never returned to the client.
+  accessToken   String
+  refreshToken  String?
+  tokenExpiresAt DateTime?
+  scopes        String[]
+  /// Follower counts and platform capabilities captured at connect time.
+  metadata      Json?
+  connectedById String
+  connectedAt   DateTime @default(now())
+  lastSyncedAt  DateTime?
+  disconnectedAt DateTime?
+  /// Set when a refresh fails, so the UI can prompt a reconnect.
+  invalidAt     DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  posts     Post[]
+
+  @@unique([workspaceId, platform, externalId])
+  @@index([workspaceId, platform])
+}
+
+enum PostStatus {
+  DRAFT
+  QUEUED
+  SCHEDULED
+  UPLOADING
+  PROCESSING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+model Post {
+  id              String     @id
+  workspaceId     String
+  projectId       String?
+  renderId        String?
+  socialAccountId String?
+  campaignId      String?
+  platform        String
+  status          PostStatus @default(DRAFT)
+  caption         String     @default("")
+  title           String?
+  hashtags        String[]
+  /// Platform-specific options: privacy level, comment settings, board id, …
+  options         Json?
+  scheduledFor    DateTime?
+  publishedAt     DateTime?
+  /// Platform-side post identifier once published.
+  externalId      String?
+  externalUrl     String?
+  errorMessage    String?
+  attempts        Int        @default(0)
+  createdById     String
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project       Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  render        Render?        @relation(fields: [renderId], references: [id], onDelete: SetNull)
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  campaign      Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  metrics       PostMetric[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, scheduledFor])
+  @@index([socialAccountId, publishedAt])
+}
+
+/// Time series of platform metrics for one post; one row per sync.
+model PostMetric {
+  id                     String   @id
+  postId                 String
+  capturedAt             DateTime @default(now())
+  views                  Int      @default(0)
+  likes                  Int      @default(0)
+  comments               Int      @default(0)
+  shares                 Int      @default(0)
+  saves                  Int      @default(0)
+  impressions            Int      @default(0)
+  watchTimeSec           Float    @default(0)
+  averageViewDurationSec Float    @default(0)
+  completionRate         Float    @default(0)
+  followersGained        Int      @default(0)
+  /// Retention sampled at deciles, each value in [0, 1].
+  retentionCurve         Float[]
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, capturedAt])
+}
+
+model Campaign {
+  id          String    @id
+  workspaceId String
+  name        String
+  description String?
+  color       String    @default("#7C5CFF")
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  posts     Post[]
+
+  @@index([workspaceId])
+}
+
+// ---------------------------------------------------------------------------
+// Collaboration
+// ---------------------------------------------------------------------------
+
+model Comment {
+  id         String   @id
+  projectId  String
+  authorId   String
+  body       String
+  /// Timeline position this comment is anchored to, in seconds.
+  timestampSec Float?
+  parentId   String?
+  resolvedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  project Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author  User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent  Comment?  @relation("CommentThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies Comment[] @relation("CommentThread")
+
+  @@index([projectId, createdAt])
+}
+
+model Template {
+  id          String   @id
+  workspaceId String
+  name        String
+  description String?
+  /// Pipeline options, caption style and export presets to apply.
+  config      Json
+  thumbnailKey String?
+  usageCount  Int      @default(0)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+model BrandKit {
+  id           String   @id
+  workspaceId  String
+  name         String
+  primaryColor String   @default("#7C5CFF")
+  accentColor  String   @default("#00E0B8")
+  fontFamily   String   @default("Inter")
+  logoKey      String?
+  /// Default caption style and watermark placement.
+  captionStyle Json?
+  isDefault    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ---------------------------------------------------------------------------
+// Background jobs
+// ---------------------------------------------------------------------------
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+/// Postgres-backed work queue. Claimed with SELECT ... FOR UPDATE SKIP LOCKED,
+/// which gives exactly-once delivery per attempt without a separate broker.
+model Job {
+  id          String    @id
+  workspaceId String?
+  projectId   String?
+  type        String
+  status      JobStatus @default(PENDING)
+  priority    Int       @default(0)
+  payload     Json
+  result      Json?
+  progress    Float     @default(0)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(4)
+  lastError   String?
+  /// Earliest time this job may be claimed; drives retry backoff and scheduling.
+  runAt       DateTime  @default(now())
+  /// Set when claimed; a stale value lets a crashed worker's job be reclaimed.
+  lockedAt    DateTime?
+  lockedBy    String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([status, runAt, priority])
+  @@index([projectId])
+  @@index([lockedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/// Append-only record of security- and billing-relevant actions.
+model AuditLog {
+  id          String   @id
+  workspaceId String?
+  actorId     String?
+  action      String
+  targetType  String?
+  targetId    String?
+  metadata    Json?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     User?      @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([actorId, createdAt])
+}
