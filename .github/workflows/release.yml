@@ -65,12 +65,16 @@ jobs:
             dist/SHA256SUMS.txt
           retention-days: 30
 
-      - name: Attach to release
+      # `gh` ships on the runner, so this needs no third-party action and no
+      # token beyond the one the workflow already has.
+      - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: false
-          generate_release_notes: true
-          files: |
-            dist/phantom-editor-*.zip
-            dist/SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            dist/phantom-editor-*.zip dist/SHA256SUMS.txt \
+            --title "Phantom editor $tag" \
+            --generate-notes \
+            || gh release upload "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt --clobber
