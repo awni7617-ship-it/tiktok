@@ -63,6 +63,19 @@ if (existsSync(join(root, 'public'))) {
 cpSync(join(root, 'prisma'), join(stage, 'prisma'), { recursive: true });
 cpSync(join(root, '.env.example'), join(stage, '.env.example'));
 
+// --- Prune ------------------------------------------------------------------
+// Next's dependency trace is conservative: it keeps anything that *might* be
+// required. These three cannot be, and together they are a third of the
+// download.
+//
+//   - typescript / @types — compile-time only, never loaded by `server.js`
+//   - sharp and its libvips binaries — only used to optimise `next/image`,
+//     and this app renders no `next/image` anywhere
+const PRUNE = ['typescript', '@types', 'sharp', '@img'];
+for (const entry of PRUNE) {
+  rmSync(join(stage, 'node_modules', entry), { recursive: true, force: true });
+}
+
 writeFileSync(
   join(stage, 'start.sh'),
   `#!/usr/bin/env bash
