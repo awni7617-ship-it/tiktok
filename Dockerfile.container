@@ -1,0 +1,58 @@
+# Phantom render container.
+#
+# This is where ffmpeg lives. Cloudflare Workers cannot execute a native
+# binary, so every job that touches media — probing, transcoding, burning in
+# captions — runs here instead. The image is a plain linux/amd64 container, so
+# the worker loop runs unchanged from the self-hosted deployment.
+#
+# Built and pushed automatically by `wrangler deploy` via the `containers`
+# entry in wrangler.jsonc.
+
+FROM node:22-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg \
+      fonts-inter \
+      fonts-dejavu-core \
+      openssl \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV LOG_FORMAT=json
+# The container has ffmpeg, so it renders locally rather than delegating.
+ENV RENDER_MODE=local
+ENV PORT=8787
+
+COPY package.json package-lock.json* ./
+COPY prisma ./prisma
+
+# The container runs TypeScript directly through tsx rather than shipping a
+# separate build step: the worker is server-only code with no bundling needs,
+# and skipping the build keeps the image and the deploy loop simple.
+RUN npm ci --ignore-scripts --omit=dev \
+ && npm i --no-save tsx typescript \
+ && npx prisma generate
+
+COPY tsconfig.json ./
+COPY src ./src
+
+# Media scratch space. Renders write here and clean up after themselves; the
+# volume is ephemeral and sized by the container instance type.
+RUN mkdir -p /app/tmp/media
+
+# Run unprivileged: this process executes ffmpeg against user-supplied media,
+# so it should hold as little authority as possible.
+RUN groupadd --system --gid 1001 phantom \
+ && useradd --system --uid 1001 --gid phantom phantom \
+ && chown -R phantom:phantom /app/tmp
+USER phantom
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["npx", "tsx", "src/server/jobs/container-entry.ts"]

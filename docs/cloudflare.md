@@ -1,0 +1,214 @@
+# Deploying Phantom on Cloudflare
+
+Phantom runs on Cloudflare as **two compute surfaces**, because the app and the
+renderer have genuinely different needs:
+
+```
+                    ┌─────────────────────────────────┐
+   request ───────▶ │  Worker  (Next.js via OpenNext) │
+                    │  pages · API · job enqueue      │
+                    └───┬──────────┬──────────┬───────┘
+                        │          │          │
+              R2 binding│ Hyperdrive│  Durable Object
+                        ▼          ▼          ▼
+                   ┌────────┐ ┌─────────┐ ┌──────────────────────┐
+                   │   R2   │ │Postgres │ │ Container (ffmpeg)   │
+                   │ media  │ │  jobs   │ │ drains the job queue │
+                   └────────┘ └─────────┘ └──────────────────────┘
+                                    ▲                │
+                                    └────────────────┘
+                                   claims jobs, writes results
+```
+
+**Why the split:** Workers cannot execute a native binary, and ffmpeg is a
+native binary. Everything else about the app suits Workers well — it is
+request-shaped and stateless. So the app is a Worker, and rendering moves to a
+Cloudflare Container, which is an ordinary `linux/amd64` image and runs the
+existing worker loop unchanged.
+
+A cron trigger wakes the container every five minutes so queued renders are
+picked up even when nobody is on the site.
+
+---
+
+## What runs where
+
+| Concern | Worker | Container |
+|---|---|---|
+| Pages, API routes, auth | ✅ | — |
+| Enqueue jobs | ✅ | — |
+| Transcription, LLM, optimizer | ✅ | ✅ |
+| ffmpeg: probe, render, thumbnails | ❌ *(no binaries)* | ✅ |
+| Reads/writes media | R2 binding | R2 over the S3 API |
+| Postgres | via Hyperdrive | direct |
+
+The runtime is detected at execution time, so this is one codebase and one
+branch — not a Cloudflare fork. Three modules do the switching:
+
+- `src/server/cloudflare/env.ts` — binding access; returns `null` off-platform
+- `src/server/db/client.ts` — Hyperdrive adapter on Workers, pooled client on Node
+- `src/server/storage/r2.ts` — R2 binding driver, selected by `STORAGE_DRIVER=r2`
+
+---
+
+## Setup
+
+### 1. Postgres
+
+Workers cannot hold a connection pool between requests, so Postgres goes behind
+Hyperdrive. Any provider works — Neon, Supabase, RDS, your own.
+
+```bash
+npx wrangler hyperdrive create phantom-db \
+  --connection-string="postgres://user:password@host:5432/phantom"
+```
+
+Copy the returned id into the `hyperdrive` block of `wrangler.jsonc`, replacing
+`REPLACE_WITH_YOUR_HYPERDRIVE_ID`.
+
+Apply the schema from your machine (pointing at the database directly, not at
+Hyperdrive):
+
+```bash
+DATABASE_URL="postgres://user:password@host:5432/phantom" npx prisma migrate deploy
+```
+
+### 2. Media bucket
+
+```bash
+npx wrangler r2 bucket create phantom-media
+```
+
+The name in `wrangler.jsonc` must match. The binding grants access — no access
+keys are involved.
+
+### 3. Secrets
+
+```bash
+npx wrangler secret put SESSION_SECRET      # openssl rand -base64 48
+npx wrangler secret put ENCRYPTION_KEY      # openssl rand -base64 48
+npx wrangler secret put CONTAINER_TOKEN     # openssl rand -base64 32
+npx wrangler secret put ANTHROPIC_API_KEY   # optional
+```
+
+`ENCRYPTION_KEY` decrypts stored OAuth tokens. **Changing it makes every
+connected social account unusable** — they must be reconnected. Set it once.
+
+### 4. Deploy
+
+```bash
+npm run cf:deploy
+```
+
+That builds the Next.js app for Workers, builds and pushes the container image,
+and deploys both. Docker must be running locally for the container build.
+
+To deploy the Worker without touching the container:
+
+```bash
+npx wrangler deploy --containers-rollout=none
+```
+
+---
+
+## Local development
+
+```bash
+npm run dev         # Next.js dev server — fastest loop, plain Node
+npm run cf:preview  # runs in workerd, exactly as production will
+```
+
+`cf:preview` is the one that matters before deploying: it catches Node-only
+APIs that work in `next dev` and fail in the Workers runtime.
+
+Regenerate binding types after editing `wrangler.jsonc`:
+
+```bash
+npm run cf:typegen
+```
+
+---
+
+## Verifying a deployment
+
+```bash
+curl https://phantom.<subdomain>.workers.dev/api/health
+```
+
+```json
+{
+  "status": "ok",
+  "runtime": "cloudflare-workers",
+  "dependencies": {
+    "database": "ok",
+    "rendering": "ok (container)",
+    "storage": "r2"
+  }
+}
+```
+
+`rendering` is the field to watch. `unavailable` with a message about the
+binding means the container did not deploy — the app still works, but exports
+will not run.
+
+Container logs and status:
+
+```bash
+npx wrangler containers list
+npx wrangler tail
+```
+
+---
+
+## Costs and limits worth knowing before you commit
+
+- **Workers has a CPU-time limit per request.** Phantom's routes are I/O-bound,
+  so this is not a constraint — but it is exactly why rendering cannot live
+  there, even ignoring the binary problem.
+- **Containers are billed while running.** `sleepAfter` is 15 minutes, chosen
+  so a creator publishing several clips in a row does not pay cold start on each
+  one. Shorten it to cut cost, lengthen it to cut latency.
+- **`instance_type` is `standard-2`.** Video encoding is CPU and memory hungry;
+  the smaller types will thrash on anything longer than a short clip.
+- **Hyperdrive pools connections but does not cache these queries.** Phantom's
+  reads are per-user and mutable, so caching would serve stale data.
+- **R2 has no egress fees**, which is the main reason to prefer it here — a
+  video platform's traffic is almost entirely media reads.
+
+---
+
+## Honest limitations
+
+- **The container is woken on a cron, not per-job.** A render can therefore wait
+  up to five minutes before starting if the container is asleep. Waking it
+  directly from the enqueue path is a small change (`wakeRenderContainer()` is
+  already written and exported) but is not currently called on that path.
+- **`R2StorageDriver.download()` throws by design.** Workers have no writable
+  filesystem. Anything needing bytes on disk runs in the container, which uses
+  the S3 driver against R2's S3 endpoint. If you add a Worker code path that
+  tries to download media to disk, it will fail loudly — that is intended.
+- **Container media access needs S3 credentials.** The container is not a Worker
+  and has no bindings, so give it an R2 API token and set `STORAGE_DRIVER=s3`
+  with `S3_ENDPOINT` pointing at your R2 endpoint.
+- **Not tested against a live Cloudflare account.** The Worker bundle builds,
+  all bindings resolve, and `wrangler deploy --dry-run` passes in CI — but the
+  end-to-end path has not been exercised on real infrastructure, and the
+  container half specifically has never been run.
+
+---
+
+## Alternative: skip Cloudflare for the renderer
+
+If the container step is more than you want to operate, deploy the Worker for
+the app and run the render worker anywhere that has ffmpeg — Fly, Railway, a
+VM — pointed at the same Postgres and R2:
+
+```bash
+STORAGE_DRIVER=s3 S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
+DATABASE_URL=postgres://... npm run worker
+```
+
+Nothing in the queue is Cloudflare-specific: workers claim jobs with
+`SELECT ... FOR UPDATE SKIP LOCKED`, so any number of them can run anywhere.
+Set `RENDER_MODE=disabled` on the Worker so the health endpoint stops reporting
+a missing container.

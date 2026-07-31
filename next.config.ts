@@ -27,6 +27,28 @@ const nextConfig: NextConfig = {
     serverActions: { bodySizeLimit: '10mb' },
   },
   serverExternalPackages: ['@prisma/client', '@aws-sdk/client-s3'],
+
+  /**
+   * `cloudflare:*` modules are provided by the Workers runtime and have no
+   * npm equivalent, so webpack cannot resolve them during `next build`. They
+   * are marked external and left for the OpenNext/wrangler bundle to supply.
+   *
+   * Without this, importing the containers SDK anywhere in the server graph
+   * fails the build even though the import is dynamic and Workers-only.
+   */
+  webpack(config) {
+    config.externals = [
+      ...(Array.isArray(config.externals) ? config.externals : [config.externals].filter(Boolean)),
+      ({ request }: { request?: string }, callback: (error?: null, result?: string) => void) => {
+        if (request?.startsWith('cloudflare:')) {
+          return callback(null, `commonjs ${request}`);
+        }
+        callback();
+      },
+    ];
+    return config;
+  },
+
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },

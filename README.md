@@ -171,6 +171,8 @@ set; the redirect URI is always `{APP_URL}/api/social/{platform}/callback`.
 
 ## Deploying
 
+### Docker (self-hosted)
+
 ```bash
 docker compose up --build          # web + worker + postgres
 docker compose up --scale worker=4 # more render capacity
@@ -181,3 +183,18 @@ for processing — so the two can never drift apart. `/api/health` reports each
 dependency separately: the app is genuinely usable without ffmpeg (everything
 but rendering) and without AI keys (offline providers), so only the database
 failing marks it unhealthy.
+
+### Cloudflare
+
+```bash
+npm run cf:preview   # run in workerd, exactly as production will
+npm run cf:deploy    # Worker + render container
+```
+
+The app deploys as a Worker (Next.js via OpenNext) with R2 for media and
+Hyperdrive in front of Postgres. Rendering **cannot** run in a Worker — ffmpeg
+is a native binary — so it moves to a Cloudflare Container running the same
+worker loop, woken by a cron trigger.
+
+The runtime is detected at execution time, so this is one codebase, not a
+Cloudflare fork. Full setup, costs and limitations: **[docs/cloudflare.md](docs/cloudflare.md)**.

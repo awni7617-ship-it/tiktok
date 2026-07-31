@@ -17,10 +17,10 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 };
 
 const COLORS: Record<LogLevel, string> = {
-  debug: '[2;37m',
-  info: '[36m',
-  warn: '[33m',
-  error: '[31m',
+  debug: '\x1b[2;37m',
+  info: '\x1b[36m',
+  warn: '\x1b[33m',
+  error: '\x1b[31m',
 };
 
 export type LogContext = Record<string, unknown>;
@@ -104,7 +104,7 @@ function createLogger(bound: LogContext = {}): Logger {
 
     if (isPretty()) {
       const details = Object.keys(payload).length > 0 ? ` ${JSON.stringify(payload)}` : '';
-      const line = `${COLORS[level]}${level.toUpperCase().padEnd(5)}[0m ${timestamp} ${message}${details}`;
+      const line = `${COLORS[level]}${level.toUpperCase().padEnd(5)}\x1b[0m ${timestamp} ${message}${details}`;
       (level === 'error' || level === 'warn' ? console.error : console.log)(line);
       return;
     }

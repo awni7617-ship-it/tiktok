@@ -11,6 +11,9 @@ next-env.d.ts
 .env.*.local
 !.env.example
 
+.open-next/
+.wrangler/
+
 storage/
 tmp/
 *.log

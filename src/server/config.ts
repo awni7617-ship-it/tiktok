@@ -21,7 +21,7 @@ const schema = z.object({
   ENCRYPTION_KEY: z.string().min(32).default('dev-only-encryption-key-change-me-now!!'),
 
   // Storage
-  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+  STORAGE_DRIVER: z.enum(['local', 's3', 'r2']).default('local'),
   STORAGE_LOCAL_PATH: z.string().default('./storage'),
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().default('us-east-1'),
@@ -45,6 +45,12 @@ const schema = z.object({
   OPENAI_BASE_URL: z.string().default('https://api.openai.com/v1'),
   DEEPGRAM_API_KEY: z.string().optional(),
   ELEVENLABS_API_KEY: z.string().optional(),
+
+  // Where rendering happens. `local` spawns ffmpeg in-process (Node server or
+  // render container); `container` delegates to the Cloudflare Container;
+  // `disabled` turns rendering off, which is the correct state for a Worker
+  // that has no ffmpeg and no container bound.
+  RENDER_MODE: z.enum(['local', 'container', 'disabled']).default('local'),
 
   // Media tooling
   FFMPEG_PATH: z.string().default('ffmpeg'),
