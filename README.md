@@ -10,10 +10,11 @@ platforms you have connected — with every decision visible and reversible.
 Prebuilt bundles are published to GitHub, so the editor can be run without
 cloning or building anything:
 
-- **[Releases](../../releases)** — `phantom-editor-<version>.zip`, attached to
-  every tagged release, with a `SHA256SUMS.txt`.
+- **[Latest release](../../releases/latest)** — `phantom-editor-<version>.zip`,
+  rebuilt and replaced on every push, with a `SHA256SUMS.txt`. One click, no
+  sign-in.
 - **[Actions → Release](../../actions/workflows/release.yml)** — the same
-  bundle as a workflow artifact on every build of `main`.
+  bundle as a workflow artifact, if you prefer per-run builds.
 
 ```bash
 unzip phantom-editor-*.zip && cd phantom-editor-*

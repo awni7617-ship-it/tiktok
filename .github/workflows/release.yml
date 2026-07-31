@@ -65,16 +65,43 @@ jobs:
             dist/SHA256SUMS.txt
           retention-days: 30
 
+      # A release, not just an artifact: artifacts expire, are zipped a second
+      # time by GitHub, and cannot be downloaded without signing in. A release
+      # asset is a plain link anyone can click.
+      #
       # `gh` ships on the runner, so this needs no third-party action and no
-      # token beyond the one the workflow already has.
+      # token beyond the one the workflow already has. It also creates the tag
+      # through the API, so no tag has to be pushed by hand.
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          gh release create "$tag" \
-            dist/phantom-editor-*.zip dist/SHA256SUMS.txt \
-            --title "Phantom editor $tag" \
-            --generate-notes \
-            || gh release upload "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt --clobber
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # A version tag is a permanent release; never overwrite one.
+            tag="${GITHUB_REF_NAME}"
+            gh release create "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt \
+              --title "Phantom editor ${tag}" --generate-notes \
+              || gh release upload "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt --clobber
+          else
+            # A rolling release, replaced on every push, so /releases/latest
+            # always serves the current build.
+            tag="latest"
+            {
+              printf 'Built automatically from `%s` (`%s`).\n\n' "$GITHUB_REF_NAME" "${GITHUB_SHA:0:7}"
+              printf '**Download `phantom-editor-*.zip` below.** Unzip it, run `./start.sh`\n'
+              printf '(Windows: `start.cmd`), then open <http://localhost:3000>.\n\n'
+              printf 'Node 20+ is the only requirement — no install, no database, no API keys.\n'
+              printf 'Video export additionally needs ffmpeg on `PATH`; everything else runs\n'
+              printf 'from the bundle.\n'
+            } > release-notes.md
+
+            gh release delete "$tag" --yes --cleanup-tag || true
+            gh release create "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt \
+              --title "Phantom editor — latest build" \
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA"
+          fi
+
+          echo "Download: $(gh release view "$tag" --json url --jq .url)"
