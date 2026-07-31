@@ -211,6 +211,15 @@ failing marks it unhealthy.
 
 ### Cloudflare
 
+**Auto-deploy (recommended).** Add one GitHub secret — `CLOUDFLARE_API_TOKEN`,
+from the *Edit Cloudflare Workers* template at
+[dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+— and `.github/workflows/deploy-cloudflare.yml` builds and deploys on every
+push, creating the R2 bucket and syncing secrets as it goes. Nothing to
+configure in the Cloudflare dashboard.
+
+**Or from your machine:**
+
 ```bash
 npx wrangler login
 npm run cf:setup     # creates the R2 bucket, names any missing secret

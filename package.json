@@ -34,7 +34,8 @@
     "cf:deploy:full": "node scripts/cloudflare-preflight.mjs --containers && opennextjs-cloudflare build && wrangler deploy --config wrangler.containers.jsonc",
     "package:editor": "node scripts/package-editor.mjs",
     "cf:build:ci": "prisma generate && opennextjs-cloudflare build",
-    "cf:deploy:ci": "npm run cf:build:ci && opennextjs-cloudflare deploy"
+    "cf:deploy:ci": "npm run cf:build:ci && opennextjs-cloudflare deploy",
+    "deploy": "npm run cf:deploy:ci"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

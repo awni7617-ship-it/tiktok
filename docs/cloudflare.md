@@ -1,5 +1,39 @@
 # Deploying Phantom on Cloudflare
 
+## The easiest path: let GitHub deploy it
+
+`.github/workflows/deploy-cloudflare.yml` builds and deploys the Worker on
+every push. Setup is one secret, once:
+
+1. Create a Cloudflare API token at
+   [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+   using the **Edit Cloudflare Workers** template.
+2. In GitHub: **Settings → Secrets and variables → Actions → New repository
+   secret**, named `CLOUDFLARE_API_TOKEN`.
+3. Push anything. **Actions → Deploy to Cloudflare** builds it, creates the R2
+   bucket if it is missing, deploys, and prints the URL.
+
+Every later push updates the live Worker automatically. Nothing is configured
+in the Cloudflare dashboard, which is the point: Workers Builds
+[does not read build settings from the repository](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/),
+so its build/deploy fields have to be filled in by hand and are easy to get
+wrong. This workflow takes that surface away.
+
+Add these as GitHub secrets too and the workflow pushes them into the Worker
+for you — no `wrangler secret put`:
+
+| Secret | Effect if absent |
+|---|---|
+| `DATABASE_URL` | App runs, nothing persists |
+| `SESSION_SECRET` | Sessions cannot be signed; set one |
+| `ENCRYPTION_KEY` | Social connections cannot be stored; set one |
+| `ANTHROPIC_API_KEY` | Offline provider is used instead |
+
+Without `CLOUDFLARE_API_TOKEN` the workflow skips itself with a notice rather
+than failing the push.
+
+---
+
 ## Start here: the deploy that works first time
 
 ```bash
