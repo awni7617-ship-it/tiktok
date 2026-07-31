@@ -61,8 +61,10 @@ jobs:
       - run: npm ci
 
       # The desktop app wraps this bundle, so it has to exist first.
+      # `--no-archive`: the installer embeds the staged directory, and `zip`
+      # is not present on the Windows runner.
       - name: Build the server bundle
-        run: npm run package:editor
+        run: npm run package:editor -- --no-archive
 
       - name: Build the installer
         run: npm run desktop:build

@@ -2,7 +2,7 @@
   "name": "phantom",
   "version": "0.1.0",
   "private": true,
-  "description": "Phantom — AI content creation platform for short-form video creators.",
+  "description": "Phantom \u2014 AI content creation platform for short-form video creators.",
   "engines": {
     "node": ">=20.11"
   },
@@ -37,7 +37,7 @@
     "cf:deploy:ci": "npm run cf:build:ci && opennextjs-cloudflare deploy",
     "deploy": "npm run cf:deploy:ci",
     "desktop": "npm run package:editor && electron .",
-    "desktop:build": "electron-builder --config electron-builder.yml"
+    "desktop:build": "electron-builder --config electron-builder.yml --publish never"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

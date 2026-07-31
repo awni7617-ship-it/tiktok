@@ -218,10 +218,17 @@ writeFileSync(
 );
 
 // --- Archive ----------------------------------------------------------------
-// Zipped under the versioned name even though the directory on disk is not,
-// so the download says which build it is.
-const zip = join(dist, `${name}.zip`);
-rmSync(zip, { force: true });
-execFileSync('zip', ['-qr', zip, 'phantom-editor'], { cwd: dist, stdio: 'inherit' });
+// The desktop build consumes the staged directory directly and has no use for
+// an archive — which matters because `zip` does not exist on a Windows runner,
+// and a missing archiver should not fail a build that never needed one.
+if (process.argv.includes('--no-archive')) {
+  console.log(`\nStaged: dist/phantom-editor\n`);
+} else {
+  // Zipped under the versioned name even though the directory on disk is not,
+  // so the download says which build it is.
+  const zip = join(dist, `${name}.zip`);
+  rmSync(zip, { force: true });
+  execFileSync('zip', ['-qr', zip, 'phantom-editor'], { cwd: dist, stdio: 'inherit' });
 
-console.log(`\nPackaged: dist/${name}.zip\n`);
+  console.log(`\nPackaged: dist/${name}.zip\n`);
+}

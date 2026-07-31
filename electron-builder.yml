@@ -27,6 +27,11 @@ extraResources:
 # dependencies needs installing into the app.
 npmRebuild: false
 
+# Publishing is the release workflow's job. Without this, electron-builder
+# detects CI and tries to upload to GitHub itself, then fails for want of a
+# token it was never meant to have.
+publish: null
+
 win:
   target:
     - target: nsis
