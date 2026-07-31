@@ -11,6 +11,7 @@ const config = [
     // Wrangler-generated binding types. None of it is ours to fix.
     ignores: [
       '.next/**',
+      'dist/**',
       '.open-next/**',
       '.wrangler/**',
       'node_modules/**',

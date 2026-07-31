@@ -1,0 +1,74 @@
+name: Release
+
+# Publishes a downloadable editor build.
+#
+#   - On a tag (`v0.1.0`): builds the bundle and attaches it to a GitHub
+#     release, so it is downloadable from the repository's Releases page.
+#   - On demand or on a push to main: uploads the same bundle as a workflow
+#     artifact, downloadable from the run's summary page.
+#
+# The bundle is a Next.js standalone build — it runs with `node server.js`
+# and a Postgres URL, with no clone, install or build step.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package editor build
+    runs-on: ubuntu-latest
+    env:
+      # The build only needs these to satisfy config validation; the bundle
+      # reads its real values from the operator's `.env` at runtime.
+      DATABASE_URL: postgresql://phantom:phantom@localhost:5432/phantom
+      SESSION_SECRET: build-time-session-secret-at-least-32-chars
+      ENCRYPTION_KEY: build-time-encryption-key-at-least-32-chars
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Package
+        run: npm run package:editor
+
+      - name: Checksum
+        run: |
+          cd dist
+          sha256sum phantom-editor-*.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # Available on every run, tagged or not — this is the "download the
+      # editor" path for anyone who does not want to wait for a release.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phantom-editor
+          path: |
+            dist/phantom-editor-*.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            dist/phantom-editor-*.zip
+            dist/SHA256SUMS.txt

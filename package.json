@@ -2,7 +2,7 @@
   "name": "phantom",
   "version": "0.1.0",
   "private": true,
-  "description": "Phantom \u2014 AI content creation platform for short-form video creators.",
+  "description": "Phantom — AI content creation platform for short-form video creators.",
   "engines": {
     "node": ">=20.11"
   },
@@ -25,9 +25,13 @@
     "verify": "npm run typecheck && npm run lint && npm run test",
     "cf:build": "opennextjs-cloudflare build",
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf:deploy": "node scripts/cloudflare-preflight.mjs && opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
-    "container": "tsx src/server/jobs/container-entry.ts"
+    "container": "tsx src/server/jobs/container-entry.ts",
+    "cf:check": "node scripts/cloudflare-preflight.mjs",
+    "cf:setup": "node scripts/cloudflare-preflight.mjs --fix",
+    "cf:deploy:full": "node scripts/cloudflare-preflight.mjs --containers && opennextjs-cloudflare build && wrangler deploy --config wrangler.containers.jsonc",
+    "package:editor": "node scripts/package-editor.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

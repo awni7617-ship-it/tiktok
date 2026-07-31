@@ -1,0 +1,94 @@
+{
+  // Phantom on Cloudflare — full deployment, with rendering.
+  //
+  //   npm run cf:deploy:full
+  //
+  // This is `wrangler.jsonc` plus the three things that need resources you
+  // have to create yourself first:
+  //
+  //   1. Hyperdrive — pooled Postgres. Create it, then paste the id below.
+  //   2. The render container — ffmpeg in a linux/amd64 image. Needs Docker
+  //      running locally to build, and a paid Workers plan to deploy.
+  //   3. A cron trigger that wakes the container to drain the render queue.
+  //
+  // Deploying this file with the Hyperdrive id still unset will fail at
+  // validation with a clear message, which is the intended behaviour: a
+  // placeholder id is a configuration error, not something to guess around.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "phantom",
+  "main": "src/cloudflare-worker.ts",
+  "compatibility_date": "2025-03-25",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    "NODE_ENV": "production",
+    "STORAGE_DRIVER": "r2",
+    // The Worker itself still cannot render; it delegates to the container.
+    "RENDER_MODE": "container",
+    "LOG_FORMAT": "json",
+    "AI_LLM_PROVIDER": "mock"
+  },
+
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "phantom-media"
+    }
+  ],
+
+  // Postgres connection pooling. A Worker cannot hold a TCP pool between
+  // requests, so Hyperdrive owns it. Create with:
+  //   npx wrangler hyperdrive create phantom-db --connection-string="postgres://..."
+  // then paste the returned id here.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "REPLACE_WITH_YOUR_HYPERDRIVE_ID",
+      "localConnectionString": "postgresql://phantom:phantom@localhost:5432/phantom"
+    }
+  ],
+
+  // The ffmpeg render container.
+  "containers": [
+    {
+      "class_name": "RenderContainer",
+      "image": "./Dockerfile.container",
+      // Video encoding is CPU and memory hungry; the smaller instance types
+      // will thrash on anything longer than a short clip.
+      "instance_type": "standard-2",
+      "max_instances": 5
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RENDER_CONTAINER",
+        "class_name": "RenderContainer"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      // Container-backed Durable Objects must use SQLite storage.
+      "new_sqlite_classes": ["RenderContainer"]
+    }
+  ],
+
+  // Drain the render queue every five minutes. This is the safety net for
+  // jobs enqueued while no container was running.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  }
+}

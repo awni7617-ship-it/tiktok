@@ -1,20 +1,25 @@
 {
-  // Phantom on Cloudflare.
+  // Phantom on Cloudflare — base deployment.
   //
-  // Two compute surfaces, because they have genuinely different needs:
+  // This config deploys the Next.js app as a Worker and nothing else, because
+  // that is the only part needing no resource you have not created yet. It
+  // binds R2 (created by `npm run cf:setup`) and reads Postgres from the
+  // `DATABASE_URL` secret.
   //
-  //   1. The Next.js app runs as a Worker (via the OpenNext adapter). It is
-  //      request-shaped, globally distributed, and never touches a binary.
-  //   2. Rendering runs in a Container, because ffmpeg is a native executable
-  //      and Workers cannot run one. The Container is a normal linux/amd64
-  //      image, so the existing worker loop runs there unchanged.
+  // Rendering is OFF here (`RENDER_MODE: disabled`): ffmpeg is a native binary
+  // and a Worker cannot run one. Two ways to turn it on:
   //
-  // A cron trigger wakes the container so queued renders are picked up even
-  // when nobody is hitting the site.
+  //   - Cloudflare Containers — `wrangler.containers.jsonc`, deployed with
+  //     `npm run cf:deploy:full`. Needs Docker locally and a paid plan.
+  //   - Any host with ffmpeg (Fly, Railway, a VM) running `npm run worker`
+  //     against the same Postgres and R2. See docs/cloudflare.md.
+  //
+  // Anything added here must also be added to `wrangler.containers.jsonc`;
+  // that file is this one plus Hyperdrive, the container and the cron trigger.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "phantom",
-  // The wrapper re-exports the OpenNext handler, the RenderContainer
-  // Durable Object, and the cron handler. OpenNext alone exports only `fetch`.
+  // The wrapper re-exports the OpenNext handler and adds the cron handler.
+  // OpenNext alone exports only `fetch`.
   "main": "src/cloudflare-worker.ts",
   "compatibility_date": "2025-03-25",
   // Required by OpenNext, and by Prisma's pg driver adapter.
@@ -32,65 +37,20 @@
   "vars": {
     "NODE_ENV": "production",
     "STORAGE_DRIVER": "r2",
-    // The Worker itself cannot render; it delegates to the container.
-    "RENDER_MODE": "container",
+    // No ffmpeg and no container in this config, so rendering is off rather
+    // than broken — the health endpoint reports that honestly instead of
+    // accepting exports that could never run.
+    "RENDER_MODE": "disabled",
     "LOG_FORMAT": "json",
     "AI_LLM_PROVIDER": "mock"
   },
 
   // Media. The binding avoids SigV4 and keeps the AWS SDK out of the bundle.
+  // The bucket must exist: `npx wrangler r2 bucket create phantom-media`.
   "r2_buckets": [
     {
       "binding": "MEDIA",
       "bucket_name": "phantom-media"
     }
-  ],
-
-  // Postgres connection pooling. A Worker cannot hold a TCP pool between
-  // requests, so Hyperdrive owns it. Create with:
-  //   npx wrangler hyperdrive create phantom-db --connection-string="postgres://..."
-  // then paste the returned id here.
-  "hyperdrive": [
-    {
-      "binding": "HYPERDRIVE",
-      "id": "REPLACE_WITH_YOUR_HYPERDRIVE_ID",
-      "localConnectionString": "postgresql://phantom:phantom@localhost:5432/phantom"
-    }
-  ],
-
-  // The ffmpeg render container.
-  "containers": [
-    {
-      "class_name": "RenderContainer",
-      "image": "./Dockerfile.container",
-      // Video encoding is CPU and memory hungry; the smaller instance types
-      // will thrash on anything longer than a short clip.
-      "instance_type": "standard-2",
-      "max_instances": 5
-    }
-  ],
-
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "RENDER_CONTAINER",
-        "class_name": "RenderContainer"
-      }
-    ]
-  },
-
-  "migrations": [
-    {
-      "tag": "v1",
-      // Container-backed Durable Objects must use SQLite storage.
-      "new_sqlite_classes": ["RenderContainer"]
-    }
-  ],
-
-  // Drain the render queue every five minutes. Renders are also woken
-  // immediately when a user requests one; this is the safety net for jobs
-  // enqueued while no container was running.
-  "triggers": {
-    "crons": ["*/5 * * * *"]
-  }
+  ]
 }

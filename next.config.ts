@@ -22,6 +22,17 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+
+  /**
+   * `standalone` emits a self-contained server (its own trimmed
+   * `node_modules`) that runs with plain `node server.js`. That is what the
+   * downloadable editor build is packaged from.
+   *
+   * It is opt-in rather than always on because the Cloudflare adapter wants
+   * the ordinary build output, and having two consumers silently share one
+   * output mode is how one of them breaks without anyone noticing.
+   */
+  output: process.env.BUILD_STANDALONE === '1' ? 'standalone' : undefined,
   experimental: {
     // Keep the ffmpeg/render helpers out of the edge bundle.
     serverActions: { bodySizeLimit: '10mb' },

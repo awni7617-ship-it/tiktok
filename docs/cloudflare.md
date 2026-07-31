@@ -1,5 +1,54 @@
 # Deploying Phantom on Cloudflare
 
+## Start here: the deploy that works first time
+
+```bash
+npx wrangler login
+npm run cf:setup     # creates the R2 bucket, tells you which secrets are missing
+npm run cf:deploy
+```
+
+`cf:setup` is a preflight. It checks the three things that cause essentially
+every Cloudflare deploy failure on this project — the R2 bucket not existing,
+secrets not being set, a placeholder id left in the config — and prints the
+exact command for each. It runs again automatically before `cf:deploy`, so a
+missing resource fails in seconds instead of after a multi-minute build.
+
+The secrets it will ask for:
+
+```bash
+npx wrangler secret put DATABASE_URL      # postgres://user:pass@host:5432/db
+npx wrangler secret put SESSION_SECRET    # openssl rand -base64 48
+npx wrangler secret put ENCRYPTION_KEY    # openssl rand -base64 48
+```
+
+Then apply the schema from your machine, pointing at Postgres directly:
+
+```bash
+DATABASE_URL="postgres://user:pass@host:5432/db" npx prisma migrate deploy
+```
+
+That deploys the app: pages, API, editor, planner, analytics, publishing.
+**Rendering is off** in this configuration — see below for why and for the two
+ways to turn it on.
+
+### Two configs, on purpose
+
+| File | Deploys | Needs |
+|---|---|---|
+| `wrangler.jsonc` | Worker + R2. `npm run cf:deploy` | An account. Nothing else. |
+| `wrangler.containers.jsonc` | The above + Hyperdrive + ffmpeg container + cron. `npm run cf:deploy:full` | A Hyperdrive id, Docker running locally, a paid Workers plan. |
+
+The base config was previously the full one, which meant a first deploy failed
+on a Hyperdrive id nobody had created yet. The full setup is still here and
+still supported — it just is not the default, because a config that references
+resources you have not created cannot deploy, and the resulting error names the
+binding rather than the fix.
+
+---
+
+## The full setup, with rendering
+
 Phantom runs on Cloudflare as **two compute surfaces**, because the app and the
 renderer have genuinely different needs:
 
@@ -51,7 +100,9 @@ branch — not a Cloudflare fork. Three modules do the switching:
 
 ---
 
-## Setup
+## Setup (full, with the render container)
+
+Everything here is on top of the base deploy above.
 
 ### 1. Postgres
 
@@ -63,8 +114,10 @@ npx wrangler hyperdrive create phantom-db \
   --connection-string="postgres://user:password@host:5432/phantom"
 ```
 
-Copy the returned id into the `hyperdrive` block of `wrangler.jsonc`, replacing
-`REPLACE_WITH_YOUR_HYPERDRIVE_ID`.
+Copy the returned id into the `hyperdrive` block of
+**`wrangler.containers.jsonc`**, replacing `REPLACE_WITH_YOUR_HYPERDRIVE_ID`.
+Deploying with the placeholder still in place fails preflight by design — an
+unset id is a configuration error, not something to guess around.
 
 Apply the schema from your machine (pointing at the database directly, not at
 Hyperdrive):
@@ -75,21 +128,23 @@ DATABASE_URL="postgres://user:password@host:5432/phantom" npx prisma migrate dep
 
 ### 2. Media bucket
 
+Already created if you ran `npm run cf:setup`. Otherwise:
+
 ```bash
 npx wrangler r2 bucket create phantom-media
 ```
 
-The name in `wrangler.jsonc` must match. The binding grants access — no access
-keys are involved.
+The name in the config must match. The binding grants access — no access keys
+are involved.
 
 ### 3. Secrets
 
 ```bash
-npx wrangler secret put SESSION_SECRET      # openssl rand -base64 48
-npx wrangler secret put ENCRYPTION_KEY      # openssl rand -base64 48
 npx wrangler secret put CONTAINER_TOKEN     # openssl rand -base64 32
 npx wrangler secret put ANTHROPIC_API_KEY   # optional
 ```
+
+plus `DATABASE_URL`, `SESSION_SECRET` and `ENCRYPTION_KEY` from the base setup.
 
 `ENCRYPTION_KEY` decrypts stored OAuth tokens. **Changing it makes every
 connected social account unusable** — they must be reconnected. Set it once.
@@ -97,16 +152,17 @@ connected social account unusable** — they must be reconnected. Set it once.
 ### 4. Deploy
 
 ```bash
-npm run cf:deploy
+npm run cf:deploy:full
 ```
 
 That builds the Next.js app for Workers, builds and pushes the container image,
-and deploys both. Docker must be running locally for the container build.
+and deploys both. Docker must be running locally for the container build, and
+containers require a paid Workers plan.
 
 To deploy the Worker without touching the container:
 
 ```bash
-npx wrangler deploy --containers-rollout=none
+npx wrangler deploy --config wrangler.containers.jsonc --containers-rollout=none
 ```
 
 ---
@@ -147,9 +203,10 @@ curl https://phantom.<subdomain>.workers.dev/api/health
 }
 ```
 
-`rendering` is the field to watch. `unavailable` with a message about the
-binding means the container did not deploy — the app still works, but exports
-will not run.
+`rendering` is the field to watch. On the base config it reports `disabled`,
+which is correct and expected — no container is bound. On the full config,
+`unavailable` with a message about the binding means the container did not
+deploy: the app still works, but exports will not run.
 
 Container logs and status:
 
@@ -190,6 +247,10 @@ npx wrangler tail
 - **Container media access needs S3 credentials.** The container is not a Worker
   and has no bindings, so give it an R2 API token and set `STORAGE_DRIVER=s3`
   with `S3_ENDPOINT` pointing at your R2 endpoint.
+- **The base config cannot render at all.** That is the deliberate trade: it
+  deploys with no resources to create beyond an R2 bucket, and reports
+  `rendering: disabled` honestly rather than accepting exports that would
+  never complete.
 - **Not tested against a live Cloudflare account.** The Worker bundle builds,
   all bindings resolve, and `wrangler deploy --dry-run` passes in CI — but the
   end-to-end path has not been exercised on real infrastructure, and the

@@ -5,6 +5,31 @@ prompt; Phantom cuts it, captions it, reframes it for vertical, cleans the
 audio, tells you what would make it perform better, and schedules it to the
 platforms you have connected — with every decision visible and reversible.
 
+## Download it
+
+Prebuilt bundles are published to GitHub, so the editor can be run without
+cloning or building anything:
+
+- **[Releases](../../releases)** — `phantom-editor-<version>.zip`, attached to
+  every tagged release, with a `SHA256SUMS.txt`.
+- **[Actions → Release](../../actions/workflows/release.yml)** — the same
+  bundle as a workflow artifact on every build of `main`.
+
+```bash
+unzip phantom-editor-*.zip && cd phantom-editor-*
+cp .env.example .env          # set DATABASE_URL
+npx prisma migrate deploy
+./start.sh                    # http://localhost:3000
+```
+
+It is a Next.js standalone build: Node 20.11+ and Postgres, no install step.
+Video **export** additionally needs ffmpeg on `PATH` and the worker process;
+everything else — cut detection, captions, reframing, the optimizer, the
+planner — runs from the bundle alone. Build it yourself with
+`npm run package:editor`.
+
+## Run from source
+
 ```bash
 cp .env.example .env
 npm install
@@ -187,14 +212,21 @@ failing marks it unhealthy.
 ### Cloudflare
 
 ```bash
-npm run cf:preview   # run in workerd, exactly as production will
-npm run cf:deploy    # Worker + render container
+npx wrangler login
+npm run cf:setup     # creates the R2 bucket, names any missing secret
+npm run cf:deploy    # Worker + R2
 ```
 
-The app deploys as a Worker (Next.js via OpenNext) with R2 for media and
-Hyperdrive in front of Postgres. Rendering **cannot** run in a Worker — ffmpeg
-is a native binary — so it moves to a Cloudflare Container running the same
-worker loop, woken by a cron trigger.
+`cf:setup` is a preflight: it checks the resources the config references
+before a build is spent on them, and prints the exact command for whatever is
+missing. It runs again as part of `cf:deploy`.
+
+Rendering **cannot** run in a Worker — ffmpeg is a native binary — so the base
+config ships with it disabled and the health endpoint says so. To enable it,
+either deploy the container config (`npm run cf:deploy:full`, which adds
+Hyperdrive, a Cloudflare Container running the same worker loop, and a cron
+trigger) or run `npm run worker` anywhere that has ffmpeg, against the same
+Postgres and R2.
 
 The runtime is detected at execution time, so this is one codebase, not a
 Cloudflare fork. Full setup, costs and limitations: **[docs/cloudflare.md](docs/cloudflare.md)**.

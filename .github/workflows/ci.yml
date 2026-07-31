@@ -108,9 +108,14 @@ jobs:
         run: npx opennextjs-cloudflare build
 
       # Validates bindings and the Worker size limit without needing an
-      # account. The container image needs Docker, so it is skipped.
-      - name: Validate deployment
-        run: npx wrangler deploy --dry-run --containers-rollout=none
+      # account.
+      - name: Validate base deployment
+        run: npx wrangler deploy --dry-run
+
+      # The full config too, so the two cannot drift. `--containers-rollout`
+      # keeps it from wanting Docker.
+      - name: Validate full deployment
+        run: npx wrangler deploy --dry-run --config wrangler.containers.jsonc --containers-rollout=none
 
   docker:
     name: Docker image builds
