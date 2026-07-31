@@ -19,6 +19,14 @@ Download, open, use it. No Node, no terminal, no database. The build is not
 code-signed, so the first launch needs **More info → Run anyway** on Windows
 or **right-click → Open** on macOS.
 
+**Updates.** The app checks for a newer build on launch and every six hours,
+and tells you when one exists — a notification, then a dialog with a Download
+button. *Help → Check for Updates…* asks on demand. It points at the download
+rather than installing silently: an unsigned app cannot self-install on
+macOS, and an updater that works on two platforms out of three is worse than
+one that behaves the same everywhere. Signing the builds is what would make
+one-click updates possible.
+
 Also published there: `phantom-editor-<version>.zip`, the same app without a
 window — a portable server for running it headless or on a machine that
 should not have a GUI:
