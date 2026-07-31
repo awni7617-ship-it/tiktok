@@ -30,11 +30,43 @@ const globalForPrisma = globalThis as unknown as {
 };
 
 function createNodeClient(): PrismaClient {
-  return new PrismaClient({
-    log:
-      config.NODE_ENV === 'development'
-        ? [{ level: 'warn', emit: 'stdout' }, { level: 'error', emit: 'stdout' }]
-        : [{ level: 'error', emit: 'stdout' }],
+  try {
+    return new PrismaClient({
+      log:
+        config.NODE_ENV === 'development'
+          ? [{ level: 'warn', emit: 'stdout' }, { level: 'error', emit: 'stdout' }]
+          : [{ level: 'error', emit: 'stdout' }],
+    });
+  } catch (error) {
+    // Constructing the client loads a platform-specific query engine binary.
+    // In a prebuilt download run on a different OS than it was packaged on,
+    // that binary is absent and the constructor throws — at import time,
+    // which would take down every page including the ones that never touch
+    // the database.
+    //
+    // The editor is pure computation and genuinely works without Postgres, so
+    // a failure here degrades to "queries fail" rather than "nothing starts".
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(`Database client unavailable; running without persistence.\n${reason}`);
+    return createUnavailableClient(reason);
+  }
+}
+
+/**
+ * Stand-in client whose every call rejects with the original reason.
+ *
+ * Shaped like the real client so call sites need no special case: they see a
+ * failing query, which they already handle, instead of a missing object.
+ */
+function createUnavailableClient(reason: string): PrismaClient {
+  const fail = () => Promise.reject(new Error(`Database unavailable: ${reason}`));
+
+  return new Proxy({} as PrismaClient, {
+    get(_target, property) {
+      if (typeof property !== 'string') return undefined;
+      if (property.startsWith('$')) return fail;
+      return new Proxy({}, { get: () => fail });
+    },
   });
 }
 

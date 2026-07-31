@@ -84,6 +84,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 [ -f .env ] && set -a && . ./.env && set +a
 
+# The commonest failure is no Node at all, and the default message for that
+# ("command not found") does not say what to install.
+if ! command -v node > /dev/null 2>&1; then
+  echo "Node.js is not installed. Get it from https://nodejs.org (version 20 or newer),"
+  echo "then run this script again."
+  exit 1
+fi
+
 # The editor itself is pure computation and runs without a database. Saving
 # projects needs one; without DATABASE_URL the app still starts and says so,
 # which is friendlier than refusing to open.
@@ -100,7 +108,27 @@ exec node server.js
 
 writeFileSync(
   join(stage, 'start.cmd'),
-  `@echo off\r\nrem Phantom editor - start script. No configuration required.\r\ncd /d "%~dp0"\r\nif "%DATABASE_URL%"=="" echo No DATABASE_URL set - the editor will run, saving will not.\r\necho Phantom editor -^> http://localhost:3000\r\nnode server.js\r\n`,
+  // `pause` at the end matters: double-clicked from Explorer, a .cmd window
+  // closes the instant the command fails, which looks exactly like "nothing
+  // happened". Keeping it open shows the reason.
+  [
+    '@echo off',
+    'rem Phantom editor - start script. No configuration required.',
+    'cd /d "%~dp0"',
+    'where node >nul 2>nul',
+    'if errorlevel 1 (',
+    '  echo Node.js is not installed. Get it from https://nodejs.org ^(version 20 or newer^),',
+    '  echo then run this file again.',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    'if "%DATABASE_URL%"=="" echo No DATABASE_URL set - the editor will run, saving will not.',
+    'echo Phantom editor -^> http://localhost:3000',
+    'echo Leave this window open while you use it.',
+    'node server.js',
+    'pause',
+    '',
+  ].join('\r\n'),
 );
 
 writeFileSync(
@@ -122,6 +150,27 @@ That is the whole thing. Every AI capability falls back to a deterministic
 offline provider that produces real output, so the editor — cut detection,
 filler removal, pacing, reframing, captions, the optimizer — works
 immediately. \`/settings\` shows which provider is serving each capability.
+
+## If nothing happens
+
+The page only exists while the server is running, so the terminal window has
+to stay open. In order of likelihood:
+
+1. **No Node.js.** Check with \`node --version\` — it must print v20 or
+   higher. If it does not, install from https://nodejs.org and try again.
+2. **The window closed instantly.** That means the command failed. On
+   Windows, open a terminal in this folder and run \`node server.js\` so the
+   error stays on screen.
+3. **Port 3000 is taken.** Start it somewhere else: \`PORT=8080 ./start.sh\`
+   (Windows: \`set PORT=8080\` then \`node server.js\`), and open
+   http://localhost:8080.
+4. **You are on a machine that did not build this.** The bundle carries a
+   Linux database engine. The editor still runs anywhere Node runs; only
+   saving needs a matching engine, and it will say so rather than fail to
+   start.
+
+Whatever the terminal prints when it stops is the answer — it is never
+silent.
 
 ## Adding a database (optional)
 
