@@ -28,7 +28,15 @@ const dist = join(root, 'dist');
 const stage = join(dist, 'phantom-editor');
 
 function run(command, argv, env = {}) {
-  execFileSync(command, argv, { cwd: root, stdio: 'inherit', env: { ...process.env, ...env } });
+  execFileSync(command, argv, {
+    cwd: root,
+    stdio: 'inherit',
+    env: { ...process.env, ...env },
+    // On Windows `npx` is `npx.cmd`, which execFileSync cannot spawn directly
+    // — it fails with ENOENT and a pid of 0, naming the command but not the
+    // reason. A shell resolves the extension.
+    shell: process.platform === 'win32',
+  });
 }
 
 // --- Build ------------------------------------------------------------------
