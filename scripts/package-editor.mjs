@@ -66,11 +66,20 @@ cpSync(join(root, '.env.example'), join(stage, '.env.example'));
 writeFileSync(
   join(stage, 'start.sh'),
   `#!/usr/bin/env bash
-# Phantom editor — start script.
+# Phantom editor — start script. No configuration required.
 set -euo pipefail
 cd "$(dirname "$0")"
 [ -f .env ] && set -a && . ./.env && set +a
-: "\${DATABASE_URL:?set DATABASE_URL (see .env.example)}"
+
+# The editor itself is pure computation and runs without a database. Saving
+# projects needs one; without DATABASE_URL the app still starts and says so,
+# which is friendlier than refusing to open.
+if [ -z "\${DATABASE_URL:-}" ]; then
+  echo "No DATABASE_URL set — the editor will run, saving will not."
+  echo "Set one in .env when you want projects to persist."
+fi
+
+echo "Phantom editor → http://localhost:\${PORT:-3000}"
 exec node server.js
 `,
   { mode: 0o755 },
@@ -78,32 +87,39 @@ exec node server.js
 
 writeFileSync(
   join(stage, 'start.cmd'),
-  `@echo off\r\nrem Phantom editor - start script.\r\ncd /d "%~dp0"\r\nif "%DATABASE_URL%"=="" echo Set DATABASE_URL first ^(see .env.example^) && exit /b 1\r\nnode server.js\r\n`,
+  `@echo off\r\nrem Phantom editor - start script. No configuration required.\r\ncd /d "%~dp0"\r\nif "%DATABASE_URL%"=="" echo No DATABASE_URL set - the editor will run, saving will not.\r\necho Phantom editor -^> http://localhost:3000\r\nnode server.js\r\n`,
 );
 
 writeFileSync(
   join(stage, 'README.md'),
   `# Phantom editor — ${pkg.version}
 
-A self-contained build. It needs Node 20.11+ and a Postgres database; it does
-not need this repository, an \`npm install\`, or any API key.
+A self-contained build. Node 20.11+ is the only requirement — no clone, no
+\`npm install\`, no database, no API key.
 
 ## Run it
 
 \`\`\`bash
-cp .env.example .env          # set DATABASE_URL at minimum
-npx prisma migrate deploy     # create the schema
-./start.sh                    # http://localhost:3000
+./start.sh          # → http://localhost:3000
 \`\`\`
 
-On Windows, use \`start.cmd\`.
+On Windows, double-click \`start.cmd\`.
 
-## What works without configuration
+That is the whole thing. Every AI capability falls back to a deterministic
+offline provider that produces real output, so the editor — cut detection,
+filler removal, pacing, reframing, captions, the optimizer — works
+immediately. \`/settings\` shows which provider is serving each capability.
 
-Every AI capability falls back to a deterministic offline provider that
-produces real output, so the editor — cut detection, filler removal, pacing,
-reframing, captions, the optimizer — works before you configure anything.
-\`/settings\` shows which provider is serving each capability.
+## Adding a database (optional)
+
+Without one the editor runs but nothing persists between restarts. To keep
+projects, point it at any Postgres:
+
+\`\`\`bash
+cp .env.example .env                    # set DATABASE_URL
+npx prisma migrate deploy               # create the schema
+./start.sh
+\`\`\`
 
 ## What needs more than this bundle
 

@@ -12,7 +12,9 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    # Feature branches build it too, so the download does not have to wait for
+    # a merge to exist.
+    branches: [main, 'claude/**']
     tags: ['v*']
   workflow_dispatch:
 
