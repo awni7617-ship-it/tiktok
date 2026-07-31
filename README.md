@@ -7,27 +7,34 @@ platforms you have connected — with every decision visible and reversible.
 
 ## Download it
 
-Prebuilt bundles are published to GitHub, so the editor can be run without
-cloning or building anything:
+**[Get the app →](../../releases/latest)**
 
-- **[Latest release](../../releases/latest)** — `phantom-editor-<version>.zip`,
-  rebuilt and replaced on every push, with a `SHA256SUMS.txt`. One click, no
-  sign-in.
-- **[Actions → Release](../../actions/workflows/release.yml)** — the same
-  bundle as a workflow artifact, if you prefer per-run builds.
+| Your computer | File |
+|---|---|
+| Windows | `Phantom-Setup-*.exe` |
+| Mac | `Phantom-*.dmg` — arm64 for Apple Silicon, x64 for Intel |
+| Linux | `Phantom-*.AppImage` |
+
+Download, open, use it. No Node, no terminal, no database. The build is not
+code-signed, so the first launch needs **More info → Run anyway** on Windows
+or **right-click → Open** on macOS.
+
+Also published there: `phantom-editor-<version>.zip`, the same app without a
+window — a portable server for running it headless or on a machine that
+should not have a GUI:
 
 ```bash
-unzip phantom-editor-*.zip && cd phantom-editor-*
-cp .env.example .env          # set DATABASE_URL
-npx prisma migrate deploy
+unzip phantom-editor-*.zip && cd phantom-editor
 ./start.sh                    # http://localhost:3000
 ```
 
-It is a Next.js standalone build: Node 20.11+ and Postgres, no install step.
-Video **export** additionally needs ffmpeg on `PATH` and the worker process;
-everything else — cut detection, captions, reframing, the optimizer, the
-planner — runs from the bundle alone. Build it yourself with
-`npm run package:editor`.
+That build needs Node 20.11+ and nothing else. Video **export** additionally
+needs ffmpeg on `PATH` and the worker process; everything else — cut
+detection, captions, reframing, the optimizer, the planner — runs on its own.
+Set `DATABASE_URL` in `.env` when you want work to persist.
+
+Build either yourself: `npm run package:editor` (server bundle) or
+`npm run desktop:build` (installer for your OS).
 
 ## Run from source
 

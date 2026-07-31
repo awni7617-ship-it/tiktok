@@ -1,19 +1,17 @@
 name: Release
 
-# Publishes a downloadable editor build.
+# Publishes the app.
 #
-#   - On a tag (`v0.1.0`): builds the bundle and attaches it to a GitHub
-#     release, so it is downloadable from the repository's Releases page.
-#   - On demand or on a push to main: uploads the same bundle as a workflow
-#     artifact, downloadable from the run's summary page.
+#   - Desktop installers: Windows (.exe), macOS (.dmg), Linux (.AppImage).
+#     Double-click to install, no Node, no terminal.
+#   - The portable server bundle (.zip), for running it headless or on a box
+#     that should not have a GUI.
 #
-# The bundle is a Next.js standalone build — it runs with `node server.js`
-# and a Postgres URL, with no clone, install or build step.
+# Every push replaces the `latest` release, so its URL always serves the
+# current build. A version tag publishes a permanent release alongside it.
 
 on:
   push:
-    # Feature branches build it too, so the download does not have to wait for
-    # a merge to exist.
     branches: [main, 'claude/**']
     tags: ['v*']
   workflow_dispatch:
@@ -25,19 +23,36 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Only needed to satisfy config validation during the build; the app reads
+  # its real values at runtime.
+  DATABASE_URL: postgresql://phantom:phantom@localhost:5432/phantom
+  SESSION_SECRET: build-time-session-secret-at-least-32-chars
+  ENCRYPTION_KEY: build-time-encryption-key-at-least-32-chars
+
 jobs:
-  package:
-    name: Package editor build
-    runs-on: ubuntu-latest
-    env:
-      # The build only needs these to satisfy config validation; the bundle
-      # reads its real values from the operator's `.env` at runtime.
-      DATABASE_URL: postgresql://phantom:phantom@localhost:5432/phantom
-      SESSION_SECRET: build-time-session-secret-at-least-32-chars
-      ENCRYPTION_KEY: build-time-encryption-key-at-least-32-chars
+  desktop:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One failing platform should not deny the others a release.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux app
+            artifact: phantom-linux
+            pattern: dist/desktop/*.AppImage
+          - os: windows-latest
+            label: Windows app
+            artifact: phantom-windows
+            pattern: dist/desktop/*.exe
+          - os: macos-latest
+            label: macOS app
+            artifact: phantom-macos
+            pattern: dist/desktop/*.dmg
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -45,63 +60,96 @@ jobs:
 
       - run: npm ci
 
-      - name: Package
+      # The desktop app wraps this bundle, so it has to exist first.
+      - name: Build the server bundle
         run: npm run package:editor
 
-      - name: Checksum
-        run: |
-          cd dist
-          sha256sum phantom-editor-*.zip > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+      - name: Build the installer
+        run: npm run desktop:build
 
-      # Available on every run, tagged or not — this is the "download the
-      # editor" path for anyone who does not want to wait for a release.
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: phantom-editor
-          path: |
-            dist/phantom-editor-*.zip
-            dist/SHA256SUMS.txt
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.pattern }}
           retention-days: 30
+          if-no-files-found: error
 
-      # A release, not just an artifact: artifacts expire, are zipped a second
-      # time by GitHub, and cannot be downloaded without signing in. A release
-      # asset is a plain link anyone can click.
-      #
-      # `gh` ships on the runner, so this needs no third-party action and no
-      # token beyond the one the workflow already has. It also creates the tag
-      # through the API, so no tag has to be pushed by hand.
-      - name: Publish release
+  bundle:
+    name: Portable server bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run package:editor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phantom-bundle
+          path: dist/phantom-editor-*.zip
+          retention-days: 30
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [desktop, bundle]
+    # Runs even when one platform failed, so a Windows-only problem does not
+    # withhold the macOS and Linux apps.
+    if: always() && needs.bundle.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloads
+          merge-multiple: true
+
+      - name: Collect and checksum
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find downloads -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) \
+            -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
+
+      # `gh` ships on the runner and creates the tag through the API, so no
+      # tag has to be pushed by hand.
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            # A version tag is a permanent release; never overwrite one.
             tag="${GITHUB_REF_NAME}"
-            gh release create "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt \
-              --title "Phantom editor ${tag}" --generate-notes \
-              || gh release upload "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt --clobber
+            gh release create "$tag" release/* --title "Phantom ${tag}" --generate-notes \
+              || gh release upload "$tag" release/* --clobber
           else
-            # A rolling release, replaced on every push, so /releases/latest
-            # always serves the current build.
             tag="latest"
             {
-              printf 'Built automatically from `%s` (`%s`).\n\n' "$GITHUB_REF_NAME" "${GITHUB_SHA:0:7}"
-              printf '**Download `phantom-editor-*.zip` below.** Unzip it, run `./start.sh`\n'
-              printf '(Windows: `start.cmd`), then open <http://localhost:3000>.\n\n'
-              printf 'Node 20+ is the only requirement — no install, no database, no API keys.\n'
-              printf 'Video export additionally needs ffmpeg on `PATH`; everything else runs\n'
-              printf 'from the bundle.\n'
-            } > release-notes.md
+              printf '## Install\n\n'
+              printf '| Your computer | Download |\n|---|---|\n'
+              printf '| Windows | `Phantom-Setup-*.exe` |\n'
+              printf '| Mac | `Phantom-*.dmg` (arm64 for Apple Silicon, x64 for Intel) |\n'
+              printf '| Linux | `Phantom-*.AppImage` |\n\n'
+              printf 'Download, open it, done — nothing else to install.\n\n'
+              printf 'The app is not code-signed, so the first launch needs one extra step:\n'
+              printf 'on Windows, **More info → Run anyway**; on macOS, **right-click → Open**.\n\n'
+              printf '`phantom-editor-*.zip` is the same app without a window — a portable\n'
+              printf 'server you start with `./start.sh` and use in a browser. Needs Node 20+.\n\n'
+              printf 'Video export additionally needs ffmpeg installed; everything else runs\n'
+              printf 'out of the box.\n\n'
+              printf -- '---\n\nBuilt from `%s` (`%s`).\n' "$GITHUB_REF_NAME" "${GITHUB_SHA:0:7}"
+            } > notes.md
 
             gh release delete "$tag" --yes --cleanup-tag || true
-            gh release create "$tag" dist/phantom-editor-*.zip dist/SHA256SUMS.txt \
-              --title "Phantom editor — latest build" \
-              --notes-file release-notes.md \
-              --target "$GITHUB_SHA"
+            gh release create "$tag" release/* \
+              --title "Phantom — latest build" --notes-file notes.md --target "$GITHUB_SHA"
           fi
 
-          echo "Download: $(gh release view "$tag" --json url --jq .url)"
+          echo "Released: $(gh release view "$tag" --json url --jq .url)"

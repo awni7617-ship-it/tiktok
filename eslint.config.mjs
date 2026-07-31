@@ -21,6 +21,12 @@ const config = [
     ],
   },
   {
+    // Electron's main process is CommonJS — it is loaded by Electron's own
+    // Node runtime, not by the bundler, so ESM-only rules do not apply.
+    files: ['desktop/**/*.js'],
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
+  {
     rules: {
       // The codebase uses `_`-prefixed parameters for deliberately unused
       // handler arguments (route params, event objects).

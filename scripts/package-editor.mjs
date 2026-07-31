@@ -23,7 +23,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const name = `phantom-editor-${pkg.version}`;
 const dist = join(root, 'dist');
-const stage = join(dist, name);
+// The staged directory has a fixed name so the desktop build can reference it
+// from a config file that must not change every time the version does.
+const stage = join(dist, 'phantom-editor');
 
 function run(command, argv, env = {}) {
   execFileSync(command, argv, { cwd: root, stdio: 'inherit', env: { ...process.env, ...env } });
@@ -216,8 +218,10 @@ writeFileSync(
 );
 
 // --- Archive ----------------------------------------------------------------
+// Zipped under the versioned name even though the directory on disk is not,
+// so the download says which build it is.
 const zip = join(dist, `${name}.zip`);
 rmSync(zip, { force: true });
-execFileSync('zip', ['-qr', zip, name], { cwd: dist, stdio: 'inherit' });
+execFileSync('zip', ['-qr', zip, 'phantom-editor'], { cwd: dist, stdio: 'inherit' });
 
 console.log(`\nPackaged: dist/${name}.zip\n`);
