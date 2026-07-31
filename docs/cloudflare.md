@@ -32,6 +32,48 @@ That deploys the app: pages, API, editor, planner, analytics, publishing.
 **Rendering is off** in this configuration — see below for why and for the two
 ways to turn it on.
 
+## Deploying from the Cloudflare dashboard (connect to Git)
+
+If you are wiring the GitHub repo up in the Cloudflare dashboard rather than
+running wrangler yourself, the defaults will not work — and the error you get
+does not say why. Two things have to be right.
+
+**Pick Workers, not Pages.** Dashboard → *Workers & Pages* → *Create* →
+*Import a repository*. Pages builds a static site; this app is a Worker with
+R2, Durable Object and (optionally) Hyperdrive bindings.
+
+**Override both commands.** The dashboard defaults to `npm run build`, which
+produces an ordinary Next.js build — not the Worker bundle wrangler then tries
+to deploy, so the deploy step fails on missing `.open-next/assets`.
+
+| Setting | Value |
+|---|---|
+| Build command | `npm run cf:build:ci` |
+| Deploy command | `npx wrangler deploy` |
+| Branch | whichever branch you want deployed |
+| Root directory | *(leave blank)* |
+
+`cf:build:ci` generates the Prisma client and then builds for Workers. (An
+`npm install` runs `prisma generate` via `postinstall` too — the missing
+generated client is the other classic dashboard build failure, because nothing
+in a plain `npm ci` creates it.)
+
+**Create the bucket and secrets before the first deploy**, because the build
+cannot do it for you:
+
+```bash
+npx wrangler r2 bucket create phantom-media
+```
+
+Then, in *Settings → Variables and Secrets* on the Worker, add as
+**secrets**: `DATABASE_URL`, `SESSION_SECRET`, `ENCRYPTION_KEY`. The plain
+variables (`NODE_ENV`, `STORAGE_DRIVER`, `RENDER_MODE`, …) come from
+`wrangler.jsonc` and do not need entering by hand.
+
+Do **not** point dashboard builds at `wrangler.containers.jsonc` — the
+container image needs Docker, which the build environment does not provide.
+The base config is the one that deploys from Git.
+
 ### Two configs, on purpose
 
 | File | Deploys | Needs |

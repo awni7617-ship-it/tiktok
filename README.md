@@ -217,6 +217,12 @@ npm run cf:setup     # creates the R2 bucket, names any missing secret
 npm run cf:deploy    # Worker + R2
 ```
 
+Deploying from the **Cloudflare dashboard** (connect-to-Git) instead? Choose
+*Workers*, not Pages, and override both commands — build `npm run cf:build:ci`,
+deploy `npx wrangler deploy`. The defaults fail because `npm run build`
+produces a Next.js build rather than the Worker bundle. Full field-by-field
+list in [docs/cloudflare.md](docs/cloudflare.md).
+
 `cf:setup` is a preflight: it checks the resources the config references
 before a build is spent on them, and prints the exact command for whatever is
 missing. It runs again as part of `cf:deploy`.
