@@ -19,9 +19,11 @@ const config = [
     ],
   },
   {
-    // Electron's main process is CommonJS — it is loaded by Electron's own
-    // Node runtime, not by the bundler, so ESM-only rules do not apply.
-    files: ['desktop/**/*.js'],
+    // CommonJS by necessity, not by preference: Electron's main process is
+    // loaded by Electron's own Node runtime and electron-builder requires its
+    // hooks the same way. Neither goes through the bundler, so the ESM-only
+    // rules do not apply.
+    files: ['desktop/**/*.js', 'scripts/**/*.cjs'],
     rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
   {

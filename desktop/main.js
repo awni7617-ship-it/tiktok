@@ -14,9 +14,20 @@
 
 const { app, BrowserWindow, Menu, shell, dialog } = require('electron');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const http = require('node:http');
+
+/**
+ * The last of the server's output, kept so a failure can show the user what
+ * actually went wrong instead of a bare exit code.
+ */
+let serverLog = '';
+
+function record(chunk) {
+  serverLog = (serverLog + chunk).slice(-4000);
+}
 
 /** Where the assembled server bundle lives, packaged or not. */
 function serverDirectory() {
@@ -85,8 +96,18 @@ let quitting = false;
 async function startServer() {
   const port = await freePort();
   const dir = serverDirectory();
+  const entry = path.join(dir, 'server.js');
 
-  serverProcess = spawn(process.execPath, [path.join(dir, 'server.js')], {
+  // A build packaged without the server bundle installs and launches perfectly
+  // and then does nothing, because the spawn below fails against a path that
+  // was never copied in. Saying so beats an empty screen.
+  if (!fs.existsSync(entry)) {
+    throw new Error(
+      `This build is missing its server (expected ${entry}). It was packaged incorrectly — please report it.`,
+    );
+  }
+
+  serverProcess = spawn(process.execPath, [entry], {
     cwd: dir,
     env: {
       ...process.env,
@@ -104,15 +125,33 @@ async function startServer() {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  serverProcess.stdout.on('data', (chunk) => process.stdout.write(`[server] ${chunk}`));
-  serverProcess.stderr.on('data', (chunk) => process.stderr.write(`[server] ${chunk}`));
+  serverProcess.stdout.on('data', (chunk) => {
+    record(chunk);
+    process.stdout.write(`[server] ${chunk}`);
+  });
+  serverProcess.stderr.on('data', (chunk) => {
+    record(chunk);
+    process.stderr.write(`[server] ${chunk}`);
+  });
+
+  // Without this, a spawn that fails outright raises an unhandled error and
+  // the app dies with no window and no message.
+  serverProcess.on('error', (error) => {
+    serverProcess = null;
+    if (quitting) return;
+    dialog.showErrorBox('Autoreel could not start', `The server could not be launched: ${error.message}`);
+    app.quit();
+  });
 
   serverProcess.on('exit', (code) => {
     serverProcess = null;
     if (quitting) return;
     dialog.showErrorBox(
       'Autoreel stopped',
-      `The server exited unexpectedly (code ${code}). Restart the app to try again.`,
+      [
+        `The server exited unexpectedly (code ${code}).`,
+        serverLog ? `\nLast output:\n${serverLog.slice(-1500)}` : '',
+      ].join(''),
     );
     app.quit();
   });
@@ -199,6 +238,26 @@ function createWindow(port) {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  // `ready-to-show` never fires if the page fails to load, and a window that
+  // is created but never shown is exactly the "nothing happens" symptom. Both
+  // paths below guarantee the user sees something.
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => {
+    if (!mainWindow) return;
+    mainWindow.show();
+    dialog.showErrorBox(
+      'Autoreel could not load',
+      [
+        `The app failed to load (${description}, code ${code}).`,
+        url ? `\nURL: ${url}` : '',
+        serverLog ? `\n\nLast server output:\n${serverLog.slice(-1500)}` : '',
+      ].join(''),
+    );
+  });
+
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
+  }, 10_000);
 
   // Anything that is not the local app opens in the real browser rather than
   // in a chromeless Electron window with no address bar.
