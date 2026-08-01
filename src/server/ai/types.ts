@@ -1,185 +1,58 @@
-import type { Transcript } from '@/lib/types';
+import type { Script } from '@/lib/types';
 
 /**
- * Provider-agnostic AI interfaces.
+ * Provider interfaces.
  *
- * Every AI capability the product uses is expressed as a narrow interface with
- * at least two implementations: a real vendor client and a deterministic mock.
- * The mock is not a test double bolted on afterwards — it is a first-class
- * provider that lets the entire platform run offline, in CI, and in local
- * development without an API key, which is what makes the pipeline testable
- * end to end.
+ * Every capability has an offline implementation that produces genuine output
+ * — a parseable script, a real WAV, a real PNG — so the whole pipeline runs
+ * end to end before any key is configured. That is what makes "install it and
+ * press go" work, and it is also what lets the test suite exercise the real
+ * code path instead of a mock of it.
  */
 
-export class AiError extends Error {
-  constructor(
-    message: string,
-    readonly provider: string,
-    readonly retryable: boolean,
-    override readonly cause?: unknown,
-  ) {
-    super(message);
-    this.name = 'AiError';
-  }
+export interface ScriptRequest {
+  /** The topic. Either the user's idea or one autopilot picked. */
+  idea: string;
+  /** Niche brief, steering subject matter and tone. */
+  brief: string;
+  /** Seconds of finished video to aim for. */
+  targetSeconds: number;
 }
 
-// ---------------------------------------------------------------------------
-// Language model
-// ---------------------------------------------------------------------------
-
-export interface LlmMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-export interface LlmRequest {
-  system?: string;
-  messages: LlmMessage[];
-  maxTokens?: number;
-  /** Cache the system prompt across calls where the provider supports it. */
-  cacheSystem?: boolean;
-}
-
-export interface LlmUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-}
-
-export interface LlmResponse {
-  text: string;
-  usage: LlmUsage;
-  model: string;
-  /** True when the provider declined to answer, so callers can fall back. */
-  refused: boolean;
-}
-
-export interface LlmJsonRequest<T> extends LlmRequest {
-  /** JSON Schema the response must satisfy. */
-  schema: Record<string, unknown>;
-  /** Parses and validates the provider's raw JSON into the domain type. */
-  parse: (value: unknown) => T;
-}
-
-export interface LlmProvider {
+export interface ScriptProvider {
   readonly name: string;
-  complete(request: LlmRequest): Promise<LlmResponse>;
-  /** Structured generation. Providers without native support fall back to prompting. */
-  completeJson<T>(request: LlmJsonRequest<T>): Promise<{ value: T; usage: LlmUsage }>;
-  /** Token-by-token streaming, used by the interactive script editor. */
-  stream(request: LlmRequest, onDelta: (text: string) => void): Promise<LlmResponse>;
+  write(request: ScriptRequest): Promise<Script>;
 }
 
-// ---------------------------------------------------------------------------
-// Speech recognition
-// ---------------------------------------------------------------------------
-
-export interface AsrRequest {
-  /** Local path or readable URL to the media. */
-  source: string;
-  /** ISO language hint; `null` asks the provider to detect. */
-  language: string | null;
-  /** Ask for speaker labels where supported. */
-  diarize: boolean;
-}
-
-export interface AsrProvider {
-  readonly name: string;
-  transcribe(request: AsrRequest): Promise<Transcript>;
-}
-
-// ---------------------------------------------------------------------------
-// Speech synthesis
-// ---------------------------------------------------------------------------
-
-export interface Voice {
-  id: string;
-  name: string;
-  /** `en-US`, `en-GB`, … */
-  locale: string;
-  gender: 'male' | 'female' | 'neutral';
-  /** Short description shown in the voice picker. */
-  style: string;
-  previewUrl?: string;
-}
-
-export interface TtsRequest {
+export interface VoiceRequest {
   text: string;
+  /** Catalog voice id, mapped to the provider's own voice name. */
   voiceId: string;
-  /** 1 is the voice's natural pace. */
-  speed: number;
-  /** Output file path the provider should write to. */
-  outputPath: string;
-  format: 'mp3' | 'wav';
+  /** Absolute path to write the audio to. */
+  outFile: string;
 }
 
-export interface TtsResult {
-  path: string;
-  durationSec: number;
-  /** Word timings when the provider returns them; enables exact caption sync. */
-  words?: { text: string; start: number; end: number }[];
-}
-
-export interface TtsProvider {
+export interface VoiceProvider {
   readonly name: string;
-  listVoices(): Promise<Voice[]>;
-  synthesize(request: TtsRequest): Promise<TtsResult>;
+  /** Writes audio to `outFile` and returns its measured duration in seconds. */
+  speak(request: VoiceRequest): Promise<number>;
 }
-
-// ---------------------------------------------------------------------------
-// Image generation & stock media
-// ---------------------------------------------------------------------------
 
 export interface ImageRequest {
   prompt: string;
-  width: number;
-  height: number;
-  outputPath: string;
-  /** Style hint passed through to providers that accept one. */
-  style?: string;
-}
-
-export interface ImageResult {
-  path: string;
-  width: number;
-  height: number;
+  /** Art-style suffix appended to the prompt. */
+  style: string;
+  /** Absolute path to write the PNG to. */
+  outFile: string;
+  /** Deterministic offline output needs a seed; real models ignore it. */
+  seed: number;
 }
 
 export interface ImageProvider {
   readonly name: string;
-  generate(request: ImageRequest): Promise<ImageResult>;
+  draw(request: ImageRequest): Promise<void>;
 }
 
-export interface StockAsset {
-  id: string;
-  kind: 'video' | 'image';
-  title: string;
-  url: string;
-  thumbnailUrl: string;
-  durationSec: number | null;
-  width: number;
-  height: number;
-  license: string;
-  attribution: string | null;
-}
-
-export interface StockProvider {
-  readonly name: string;
-  search(query: string, options: { kind?: 'video' | 'image'; limit?: number }): Promise<StockAsset[]>;
-}
-
-// ---------------------------------------------------------------------------
-// Vision / region detection
-// ---------------------------------------------------------------------------
-
-export interface RoiDetector {
-  readonly name: string;
-  /**
-   * Detect faces and salient regions across a video.
-   * `sampleFps` controls the trade-off between tracking accuracy and cost.
-   */
-  detect(source: string, options: { sampleFps: number; durationSec: number }): Promise<
-    import('@/lib/types').RegionOfInterest[]
-  >;
-}
+/** Vertical short-form, the only aspect these platforms take full-screen. */
+export const FRAME_WIDTH = 1080;
+export const FRAME_HEIGHT = 1920;
