@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { config } from '@/server/config';
 import { logger } from '@/server/obs/logger';
+import { addToLibrary } from './library';
 import { produceVideo, type ProduceOptions, type ProduceProgress } from './produce';
 
 const log = logger.child({ module: 'studio:jobs' });
@@ -31,7 +32,11 @@ export interface StudioJob {
   error?: string;
 }
 
-/** Productions are large; keeping every one would fill the disk silently. */
+/**
+ * Finished jobs are forgotten quickly — their video lives in the library now,
+ * so nothing is lost, and their scratch assets (narration clips, stills) are
+ * hundreds of megabytes that nobody needs again.
+ */
 const MAX_RETAINED = 8;
 
 const jobs = new Map<string, StudioJob>();
@@ -89,8 +94,26 @@ export async function startProduction(
     .then(async (result) => {
       const current = jobs.get(id);
       if (!current) return;
+
+      // Into the library before the job is marked done: a video that only
+      // exists in a scratch directory disappears on the next cleanup, and
+      // "where did my video go" is the worst possible answer.
+      const { size } = await stat(result.videoPath);
+      const saved = await addToLibrary({
+        id,
+        title: result.content.title,
+        createdAt: new Date().toISOString(),
+        durationSec: result.durationSec,
+        sceneCount: result.sceneCount,
+        width: options.width ?? 1080,
+        height: options.height ?? 1920,
+        bytes: size,
+        prompt: options.prompt,
+        sourcePath: result.videoPath,
+      });
+
       current.status = 'done';
-      current.videoPath = result.videoPath;
+      current.videoPath = saved.path;
       current.durationSec = result.durationSec;
       current.sceneCount = result.sceneCount;
       current.title = result.content.title;

@@ -3,40 +3,22 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import {
-  BarChart3,
-  CalendarDays,
-  Clapperboard,
-  Command,
-  LayoutDashboard,
-  Menu,
-  Moon,
-  Send,
-  Settings,
-  Sparkles,
-  Sun,
-  Users,
-  X,
-} from 'lucide-react';
+import { Command, Film, Menu, Moon, Settings, Sparkles, Sun, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Badge, Kbd } from '@/components/ui/primitives';
 
 /**
  * Application shell: sidebar, top bar, command palette.
  *
- * The sidebar collapses to a slide-over on small screens rather than
- * disappearing, so every destination stays reachable on a phone — creators
- * review and approve from mobile even when they edit on desktop.
+ * Three destinations, because there are three things the app does: make a
+ * video, watch the ones you made, and configure what powers them. Screens
+ * that showed plausible-looking demo data were removed outright — a menu full
+ * of pages that do not work reads as an app where nothing works.
  */
 
 const NAV = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/projects', label: 'Projects', icon: Clapperboard },
-  { href: '/studio', label: 'AI Studio', icon: Sparkles },
-  { href: '/planner', label: 'Planner', icon: CalendarDays },
-  { href: '/publish', label: 'Publishing', icon: Send },
-  { href: '/analytics', label: 'Analytics', icon: BarChart3 },
-  { href: '/team', label: 'Team', icon: Users },
+  { href: '/', label: 'Make a video', icon: Sparkles },
+  { href: '/videos', label: 'Your videos', icon: Film },
   { href: '/settings', label: 'Settings', icon: Settings },
 ] as const;
 
@@ -145,7 +127,9 @@ function SidebarContent({ workspaceName, pathname }: { workspaceName: string; pa
 
       <nav className="flex-1 space-y-0.5" aria-label="Main">
         {NAV.map((item) => {
-          const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+          // `/` would otherwise match every route as a prefix.
+          const active =
+            item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
           return (
             <Link
               key={item.href}
@@ -210,13 +194,9 @@ function ThemeToggle() {
 }
 
 const COMMANDS = [
-  { label: 'New project from upload', href: '/projects/new', hint: 'Upload' },
-  { label: 'Generate a video from a prompt', href: '/studio', hint: 'AI Studio' },
-  { label: 'Open the content calendar', href: '/planner', hint: 'Planner' },
-  { label: 'Review the publishing queue', href: '/publish', hint: 'Publishing' },
-  { label: 'See analytics', href: '/analytics', hint: 'Analytics' },
-  { label: 'Connect a social account', href: '/settings/accounts', hint: 'Settings' },
-  { label: 'Manage team members', href: '/team', hint: 'Team' },
+  { label: 'Make a video from an idea', href: '/', hint: 'Make' },
+  { label: 'Open your videos', href: '/videos', hint: 'Videos' },
+  { label: 'Check which AI providers are active', href: '/settings', hint: 'Settings' },
 ];
 
 function CommandPalette({ onClose }: { onClose: () => void }) {

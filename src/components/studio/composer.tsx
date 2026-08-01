@@ -54,7 +54,7 @@ export function StudioComposer() {
    * on screen — including any edits — rather than a fresh generation that
    * would quietly differ from what was reviewed.
    */
-  const build = async (content: GeneratedContent) => {
+  const build = async (content?: GeneratedContent) => {
     setError(null);
     setProduction({ id: null, status: 'running', fraction: 0, message: 'Starting', videoUrl: null });
 
@@ -63,7 +63,7 @@ export function StudioComposer() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: prompt || content.title,
+          prompt: prompt || content?.title || 'Untitled',
           content,
           niche,
           platform,
@@ -127,10 +127,10 @@ export function StudioComposer() {
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">AI Studio</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Make a video</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Describe an idea or paste a script. You get a title, hook, scene-by-scene breakdown,
-          narration and metadata — all editable before anything renders.
+          Describe an idea. Phantom writes the script, narrates it, illustrates it and renders a
+          finished vertical video — or stop after the script and edit it first.
         </p>
       </header>
 
@@ -232,9 +232,30 @@ export function StudioComposer() {
 
           {error ? <Notice tone="danger">{error}</Notice> : null}
 
-          <Button variant="primary" size="lg" className="w-full" loading={loading} onClick={generate}>
-            {loading ? 'Writing…' : 'Generate'}
+          <Button
+            variant="primary"
+            size="lg"
+            className="w-full"
+            icon={<Film className="size-4" />}
+            loading={production?.status === 'running'}
+            onClick={() => {
+              if (prompt.trim().length < 8) {
+                setError('Give it a little more to work with — a sentence is plenty.');
+                return;
+              }
+              void build();
+            }}
+          >
+            {production?.status === 'running' ? 'Making your video…' : 'Make my video'}
           </Button>
+
+          <Button variant="ghost" className="w-full" loading={loading} onClick={generate}>
+            {loading ? 'Writing…' : 'Write the script first'}
+          </Button>
+
+          <p className="text-center text-xs text-[var(--text-muted)]">
+            Script, narration, visuals and captions — one file at the end, saved to Your videos.
+          </p>
         </Card>
 
         <div className="space-y-4">

@@ -1,9 +1,8 @@
 # Phantom
 
-AI content studio for short-form video. Upload a raw recording or start from a
-prompt; Phantom cuts it, captions it, reframes it for vertical, cleans the
-audio, tells you what would make it perform better, and schedules it to the
-platforms you have connected — with every decision visible and reversible.
+Describe an idea, get a finished vertical video. Phantom writes the script,
+narrates it, illustrates it, cuts it together with motion and captions, and
+saves the `.mp4` on your machine — no account, no database, no setup.
 
 ## Download it
 
@@ -40,10 +39,8 @@ unzip phantom-editor-*.zip && cd phantom-editor
 ./start.sh                    # http://localhost:3000
 ```
 
-That build needs Node 20.11+ and nothing else. Video **export** additionally
-needs ffmpeg on `PATH` and the worker process; everything else — cut
-detection, captions, reframing, the optimizer, the planner — runs on its own.
-Set `DATABASE_URL` in `.env` when you want work to persist.
+That build needs Node 20.11+ and nothing else — ffmpeg is bundled with it, so
+rendering works out of the box.
 
 Build either yourself: `npm run package:editor` (server bundle) or
 `npm run desktop:build` (installer for your OS).
@@ -51,13 +48,8 @@ Build either yourself: `npm run package:editor` (server bundle) or
 ## Run from source
 
 ```bash
-cp .env.example .env
 npm install
-docker compose up -d postgres
-npx prisma migrate dev
-npm run db:seed
-npm run dev          # web app on :3000
-npm run worker       # background processing, in a second terminal
+npm run dev          # http://localhost:3000
 ```
 
 **No API keys are needed to run it.** Every AI capability falls back to a
@@ -69,41 +61,46 @@ anything. `/settings` shows which provider is actually serving each capability.
 
 ## What it does
 
-| Area | What is implemented |
+Three screens, because there are three things it does:
+
+| Screen | What it does |
 |---|---|
-| **AI editor** | Silence and filler removal, false-start detection, pacing retiming, engagement scoring, clip variations, auto-reframe with subject tracking, animated captions, measurement-driven audio and video cleanup |
-| **Render pipeline** | ffmpeg filter-graph compiler, trim/concat with retiming, animated crop, motion, burned-in ASS captions, sidechain-ducked music, multi-preset export |
-| **Content generator** | Prompt or script → title, hook, script, scenes, B-roll queries, description, hashtags, CTA and thumbnail concepts, across 16 content types |
-| **Faceless studio** | Idea → finished `.mp4`: script, narration, visuals, Ken Burns motion, crossfades, burned-in captions, ducked music. Runs in-app with bundled ffmpeg |
-| **Viral optimizer** | Explainable rules over the real measurements, plus an AI review pass; every suggestion carries its evidence and can be applied, edited or dismissed |
-| **Publishing** | OAuth 2.0 + PKCE connections, encrypted token storage, per-platform validation, upload adapters for TikTok, YouTube, Instagram and Facebook |
-| **Planner** | Drag-and-drop calendar, queue management, posting-time recommendations, cadence analysis |
-| **Analytics** | Aggregation, period comparison, retention curves with drop-off detection, top-performer ranking, AI summaries |
-| **Collaboration** | Workspaces, five roles with server-enforced permissions, timeline-anchored comments, version snapshots, templates, brand kits |
+| **Make a video** | Describe an idea → script, narration, visuals, captions, and a finished vertical `.mp4`. Or stop after the script and edit it first. |
+| **Your videos** | Everything you have made, saved on your own machine. Play, download, delete. Survives restarts with no database. |
+| **Settings** | Which AI provider is serving each capability, and what to set to change it. |
 
-### Deliberately not finished
+Under the hood that is: an AI content generator across 16 niches, a text-to-speech
+narrator, an image generator, and an ffmpeg compiler that lays stills onto a
+vertical timeline with Ken Burns motion, crossfades, burned-in captions and a
+ducked music bed — all timed to the measured length of the narration.
 
-Being straight about the edges, since the surface is large:
+**ffmpeg ships inside the desktop app**, so making a video needs nothing
+installed.
 
-- **ASR/TTS/image providers**: OpenAI-compatible transcription, speech and image
-  generation are implemented. Deepgram and ElevenLabs are configurable but fall
-  back to the mock — the interfaces are there, the clients are not written.
-- **Publishing adapters**: TikTok, YouTube, Instagram and Facebook are
-  implemented end to end. LinkedIn, Pinterest and X have full OAuth definitions
-  and validation rules but no upload adapter yet; `getAdapter` refuses them with
-  a clear message rather than failing mid-publish.
-- **ROI detection** uses a synthetic subject track. The `RoiDetector` interface
-  is what a real face detector plugs into; the reframe *planner* it feeds is
-  complete and tested.
-- **Auth UI**: sessions, password hashing, RBAC and guards are implemented and
-  tested; the login/signup screens are not built, so the UI runs against demo
-  data rather than a signed-in session.
-- **Analytics sync** writes real metric rows from the platform APIs, but the
-  dashboards currently read a seeded demo dataset.
+### What was removed, and why
 
-Everything above is behind an interface with a working implementation on the
-other side, so none of it is a rewrite — but none of it should be mistaken for
-done.
+The app used to have eight screens: a dashboard, projects, a planner, a
+publishing queue, analytics and a team page. They rendered convincing data
+that was seeded demo content — none of it was yours, and none of it updated.
+A menu full of screens that do not work is indistinguishable from an app where
+nothing works, so they are gone.
+
+The engines behind them are not. Silence and filler detection, cut planning,
+auto-reframe, the viral optimizer, the publishing adapters, the scheduler and
+the analytics aggregation are all still here, tested, and waiting on wiring to real
+data rather than a seed file. They come back one at a time, each when it does
+something real.
+
+### Still true of what remains
+
+- **Visuals are generated gradients** until an image provider is configured.
+  The offline provider writes a real PNG, not a placeholder file, but it is
+  not a photograph. `OPENAI_API_KEY` swaps in real image generation with no
+  code change.
+- **Narration is synthetic speech** from the offline provider until a TTS key
+  is set. Same interface either way.
+- **Nothing is published anywhere.** Connecting a social account and posting
+  is implemented in the server but not reachable from these three screens.
 
 ---
 
@@ -140,11 +137,12 @@ That has three consequences worth the constraint:
 
 ```
 src/
-  app/                    Routes, pages and the JSON API
-  components/             Design system, charts, editor, planner
+  app/                    Three screens and the JSON API
+  components/             Design system, studio, video library
   lib/                    Shared types and pure helpers (client-safe)
   server/
-    edit/                 The AI editor. Pure. Heavily tested.
+    studio/               Idea → finished video: compiler, orchestrator, library
+    edit/                 The AI editor engines. Pure. Heavily tested.
     video/                ffmpeg filter-graph compiler and render pipeline
     ai/                   Provider interfaces + Anthropic, OpenAI and mock
     optimizer/            Rules engine and AI review
@@ -155,7 +153,7 @@ src/
     auth/ security/       Sessions, RBAC, crypto, rate limiting
     storage/              Local and S3-compatible drivers
 prisma/schema.prisma      Data model
-tests/                    208 tests
+tests/                    248 tests
 ```
 
 ---
