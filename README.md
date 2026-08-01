@@ -91,14 +91,30 @@ the analytics aggregation are all still here, tested, and waiting on wiring to r
 data rather than a seed file. They come back one at a time, each when it does
 something real.
 
-### Still true of what remains
+### Getting good output
 
-- **Visuals are generated gradients** until an image provider is configured.
-  The offline provider writes a real PNG, not a placeholder file, but it is
-  not a photograph. `OPENAI_API_KEY` swaps in real image generation with no
-  code change.
-- **Narration is synthetic speech** from the offline provider until a TTS key
-  is set. Same interface either way.
+Out of the box everything runs on offline stand-ins: template scripts,
+synthetic tone for narration, gradients for visuals. That is why untouched
+output looks generic — it is a working pipeline with placeholder intelligence
+in it.
+
+**Settings → AI keys** changes that, in the app, with no restart:
+
+| Key | What it does |
+|---|---|
+| Anthropic | Claude writes the script, hook, scenes and metadata |
+| OpenAI | `gpt-image-1` makes the visuals, `tts-1-hd` speaks the narration |
+
+Keys are stored in the app's own data folder with `0600` permissions, never
+sent to the browser, and never leave your machine except to the provider.
+
+The models are also *told what they are writing for*: that each scene becomes
+one still image with a slow push-in, that captions are burned in from the
+narration word for word, that there is no live action or camera movement, and
+that the image model must render no text. Without that brief a script model
+writes "cut to a montage of the 1970s" — a direction nothing in the pipeline
+can render — and the image model bakes garbled words into a frame that
+already has captions over it.
 - **Nothing is published anywhere.** Connecting a social account and posting
   is implemented in the server but not reachable from these three screens.
 

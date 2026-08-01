@@ -1,6 +1,7 @@
 import type { ContentNiche, GeneratedContent, PlatformId, ScriptScene } from '@/lib/types';
 import { dedupeHashtags, estimateSpeechDuration } from '@/lib/text';
 import { round } from '@/lib/time';
+import { PIPELINE_BRIEF, captionSafeNote, nicheDirection } from '@/server/studio/prompts';
 import { getLlm, withRetry } from './registry';
 import { generatedContentSchema, parseGeneratedContent, toJsonSchema } from './schemas';
 
@@ -25,7 +26,11 @@ Rules you always follow:
 - Never invent statistics, quotes, studies, or named sources. If a factual claim would strengthen the script and you are not certain of it, write the line so it works without the number.
 - Match the requested duration by controlling scene count, not by padding narration.
 
-Return the complete package: title and alternates, hook and alternates, full script, scene breakdown, description, hashtags, CTA and thumbnail concepts.`;
+Return the complete package: title and alternates, hook and alternates, full script, scene breakdown, description, hashtags, CTA and thumbnail concepts.
+
+${PIPELINE_BRIEF}
+
+${captionSafeNote()}`;
 
 export interface GenerateContentOptions {
   /** The creator's idea, topic or full script. */
@@ -88,7 +93,14 @@ export function buildUserPrompt(options: GenerateContentOptions): string {
   }
 
   parts.push('');
-  if (options.niche) parts.push(`Content type: ${options.niche.replace(/-/g, ' ')}`);
+  if (options.niche) {
+    const direction = nicheDirection(options.niche);
+    parts.push(`Content type: ${options.niche.replace(/-/g, ' ')}`);
+    // The niche is not just a label: it carries how this kind of video is
+    // written and what its imagery should look like.
+    parts.push(`How this type is written: ${direction.writing}`);
+    parts.push(`Visual language for the stills: ${direction.look}`);
+  }
   if (options.targetDurationSec) {
     parts.push(
       `Target length: ${options.targetDurationSec} seconds of spoken narration (roughly ${Math.round(

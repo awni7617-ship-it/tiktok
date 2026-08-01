@@ -1,5 +1,6 @@
 import { config } from '@/server/config';
 import { logger } from '@/server/obs/logger';
+import { credential } from '@/server/settings/store';
 import { AiError, type AsrProvider, type ImageProvider, type LlmProvider, type RoiDetector, type StockProvider, type TtsProvider } from './types';
 import {
   MockAsrProvider,
@@ -17,11 +18,14 @@ const log = logger.child({ module: 'ai:registry' });
 /**
  * Provider registry.
  *
- * Resolves the configured provider for each capability, falling back to the
- * deterministic mock when credentials are missing. The fallback is logged
- * loudly but never throws: a creator who has not configured a transcription
- * key should still be able to explore the whole product, and CI should never
- * need secrets.
+ * A key is a decision. If a creator has pasted an Anthropic key into
+ * Settings, they want Claude writing their scripts — not a mock, and not a
+ * second environment variable saying so. So the best available provider is
+ * selected by what is actually configured, and `AI_*_PROVIDER` only matters
+ * when it forces something *off*.
+ *
+ * The deterministic mocks remain the floor: missing credentials degrade the
+ * output, never break the pipeline, and CI never needs secrets.
  */
 
 let llm: LlmProvider | null = null;
@@ -39,9 +43,12 @@ function fallback<T>(capability: string, requested: string, reason: string, mock
 export function getLlm(): LlmProvider {
   if (llm) return llm;
 
-  if (config.AI_LLM_PROVIDER === 'anthropic') {
+  const key = credential('anthropicApiKey', config.ANTHROPIC_API_KEY);
+  const model = credential('anthropicModel', config.ANTHROPIC_MODEL);
+
+  if (key) {
     try {
-      llm = new AnthropicProvider();
+      llm = new AnthropicProvider(key, model);
     } catch (error) {
       llm = fallback(
         'llm',
@@ -60,11 +67,13 @@ export function getLlm(): LlmProvider {
 export function getAsr(): AsrProvider {
   if (asr) return asr;
 
-  switch (config.AI_ASR_PROVIDER) {
+  const openaiKey = credential('openaiApiKey', config.OPENAI_API_KEY);
+
+  switch (openaiKey ? 'openai' : config.AI_ASR_PROVIDER) {
     case 'openai':
-      asr = config.OPENAI_API_KEY
-        ? new OpenAiAsrProvider()
-        : fallback('asr', 'openai', 'OPENAI_API_KEY not set', new MockAsrProvider());
+      asr = openaiKey
+        ? new OpenAiAsrProvider(openaiKey)
+        : fallback('asr', 'openai', 'no OpenAI key', new MockAsrProvider());
       break;
     case 'deepgram':
       // Deepgram is configured but not yet implemented; the mock keeps the
@@ -81,11 +90,13 @@ export function getAsr(): AsrProvider {
 export function getTts(): TtsProvider {
   if (tts) return tts;
 
-  switch (config.AI_TTS_PROVIDER) {
+  const openaiKey = credential('openaiApiKey', config.OPENAI_API_KEY);
+
+  switch (openaiKey ? 'openai' : config.AI_TTS_PROVIDER) {
     case 'openai':
-      tts = config.OPENAI_API_KEY
-        ? new OpenAiTtsProvider()
-        : fallback('tts', 'openai', 'OPENAI_API_KEY not set', new MockTtsProvider());
+      tts = openaiKey
+        ? new OpenAiTtsProvider(openaiKey)
+        : fallback('tts', 'openai', 'no OpenAI key', new MockTtsProvider());
       break;
     case 'elevenlabs':
       tts = fallback('tts', 'elevenlabs', 'provider not implemented', new MockTtsProvider());
@@ -100,10 +111,8 @@ export function getTts(): TtsProvider {
 export function getImage(): ImageProvider {
   if (image) return image;
 
-  image =
-    config.AI_IMAGE_PROVIDER === 'openai' && config.OPENAI_API_KEY
-      ? new OpenAiImageProvider()
-      : new MockImageProvider();
+  const openaiKey = credential('openaiApiKey', config.OPENAI_API_KEY);
+  image = openaiKey ? new OpenAiImageProvider(openaiKey) : new MockImageProvider();
 
   return image;
 }
@@ -148,10 +157,10 @@ export function registerProviders(overrides: {
 /** Which provider is actually serving each capability, for the settings UI. */
 export function describeProviders(): Record<string, { configured: string; active: string }> {
   return {
-    llm: { configured: config.AI_LLM_PROVIDER, active: getLlm().name },
-    asr: { configured: config.AI_ASR_PROVIDER, active: getAsr().name },
-    tts: { configured: config.AI_TTS_PROVIDER, active: getTts().name },
-    image: { configured: config.AI_IMAGE_PROVIDER, active: getImage().name },
+    llm: { configured: credential('anthropicApiKey', config.ANTHROPIC_API_KEY) ? 'anthropic' : 'mock', active: getLlm().name },
+    asr: { configured: credential('openaiApiKey', config.OPENAI_API_KEY) ? 'openai' : 'mock', active: getAsr().name },
+    tts: { configured: credential('openaiApiKey', config.OPENAI_API_KEY) ? 'openai' : 'mock', active: getTts().name },
+    image: { configured: credential('openaiApiKey', config.OPENAI_API_KEY) ? 'openai' : 'mock', active: getImage().name },
   };
 }
 

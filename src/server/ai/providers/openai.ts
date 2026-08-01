@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Transcript, TranscriptSegment, TranscriptWord } from '@/lib/types';
 import { round } from '@/lib/time';
 import { config } from '@/server/config';
+import { credential } from '@/server/settings/store';
 import {
   AiError,
   type AsrProvider,
@@ -25,16 +26,18 @@ import {
  * by changing `OPENAI_BASE_URL` alone.
  */
 
-function requireKey(): string {
-  const key = config.OPENAI_API_KEY;
-  if (!key) throw new AiError('OPENAI_API_KEY is required', 'openai', false);
+function requireKey(explicit?: string): string {
+  // Settings first: a key pasted into the app is the user's current intent,
+  // and it must win over whatever the environment was started with.
+  const key = explicit ?? credential('openaiApiKey', config.OPENAI_API_KEY);
+  if (!key) throw new AiError('An OpenAI API key is required', 'openai', false);
   return key;
 }
 
-async function request(endpoint: string, init: RequestInit): Promise<Response> {
+async function request(endpoint: string, init: RequestInit, key?: string): Promise<Response> {
   const response = await fetch(`${config.OPENAI_BASE_URL}${endpoint}`, {
     ...init,
-    headers: { Authorization: `Bearer ${requireKey()}`, ...(init.headers ?? {}) },
+    headers: { Authorization: `Bearer ${requireKey(key)}`, ...(init.headers ?? {}) },
   });
 
   if (!response.ok) {
@@ -52,6 +55,9 @@ async function request(endpoint: string, init: RequestInit): Promise<Response> {
 }
 
 export class OpenAiAsrProvider implements AsrProvider {
+  /** Key from the settings screen, when the registry has one. */
+  constructor(private readonly apiKey?: string) {}
+
   readonly name = 'openai';
 
   /**
@@ -71,7 +77,7 @@ export class OpenAiAsrProvider implements AsrProvider {
     form.append('timestamp_granularities[]', 'segment');
     if (req.language) form.append('language', req.language);
 
-    const response = await request('/audio/transcriptions', { method: 'POST', body: form });
+    const response = await request('/audio/transcriptions', { method: 'POST', body: form }, this.apiKey);
     return parseWhisperResponse(await response.json());
   }
 }
@@ -130,6 +136,9 @@ const OPENAI_VOICES: Voice[] = [
 ];
 
 export class OpenAiTtsProvider implements TtsProvider {
+  /** Key from the settings screen, when the registry has one. */
+  constructor(private readonly apiKey?: string) {}
+
   readonly name = 'openai';
 
   async listVoices(): Promise<Voice[]> {
@@ -147,7 +156,7 @@ export class OpenAiTtsProvider implements TtsProvider {
         speed: Math.min(4, Math.max(0.25, req.speed)),
         response_format: req.format === 'wav' ? 'wav' : 'mp3',
       }),
-    });
+    }, this.apiKey);
 
     const buffer = Buffer.from(await response.arrayBuffer());
     await mkdir(path.dirname(req.outputPath), { recursive: true });
@@ -159,6 +168,9 @@ export class OpenAiTtsProvider implements TtsProvider {
 }
 
 export class OpenAiImageProvider implements ImageProvider {
+  /** Key from the settings screen, when the registry has one. */
+  constructor(private readonly apiKey?: string) {}
+
   readonly name = 'openai';
 
   async generate(req: ImageRequest): Promise<ImageResult> {
@@ -171,7 +183,7 @@ export class OpenAiImageProvider implements ImageProvider {
         size: nearestSupportedSize(req.width, req.height),
         n: 1,
       }),
-    });
+    }, this.apiKey);
 
     const payload = (await response.json()) as { data?: { b64_json?: string; url?: string }[] };
     const entry = payload.data?.[0];

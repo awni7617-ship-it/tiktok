@@ -6,6 +6,7 @@ import { getImage, getTts } from '@/server/ai/registry';
 import { toAss } from '@/server/edit/captions';
 import { ffmpeg, probeMedia } from '@/server/video/ffmpeg';
 import { logger } from '@/server/obs/logger';
+import { buildImagePrompt } from './prompts';
 import {
   DEFAULT_CAPTION_STYLE,
   buildSlideshowCommand,
@@ -164,7 +165,14 @@ export async function produceVideo(options: ProduceOptions): Promise<ProduceResu
 
     const outputPath = path.join(assets, `scene-${index}.png`);
     const result = await image.generate({
-      prompt: scene.visual,
+      // The scene's visual direction, plus the framing, look and text ban the
+      // script model should not have to think about.
+      prompt: buildImagePrompt({
+        visual: scene.visual,
+        niche: options.niche,
+        tone: options.tone,
+        index,
+      }),
       // Generated at frame size so the Ken Burns push has real pixels to
       // work with rather than upscaling artefacts.
       width,

@@ -5,6 +5,8 @@ import {
   planSceneTiming,
   type SlideshowScene,
 } from '../src/server/studio/slideshow';
+import { PIPELINE_BRIEF, buildImagePrompt, nicheDirection } from '../src/server/studio/prompts';
+import { humanizeError } from '../src/server/studio/jobs';
 
 /**
  * The faceless video compiler.
@@ -183,5 +185,86 @@ describe('caption chunking', () => {
 
   it('returns nothing for empty input', () => {
     expect(chunkText('   ', 20)).toEqual([]);
+  });
+});
+
+describe('image prompts', () => {
+  it('bans text, because captions are already burned over the frame', () => {
+    const prompt = buildImagePrompt({ visual: 'a lighthouse in a storm' });
+    expect(prompt).toMatch(/no text/i);
+    expect(prompt).toMatch(/no letters/i);
+    expect(prompt).toMatch(/no watermark/i);
+  });
+
+  it('states the vertical framing the pipeline actually renders', () => {
+    const prompt = buildImagePrompt({ visual: 'a cracked stone tablet' });
+    expect(prompt).toMatch(/9:16/);
+  });
+
+  it('carries the look of the niche rather than one generic style', () => {
+    const scary = buildImagePrompt({ visual: 'an empty corridor', niche: 'scary-story' });
+    const finance = buildImagePrompt({ visual: 'an empty corridor', niche: 'finance' });
+
+    expect(scary).not.toBe(finance);
+    expect(scary).toMatch(/shadow|fog|cold/i);
+    expect(finance).toMatch(/neutral|glass|clean/i);
+  });
+
+  it('varies framing between consecutive scenes', () => {
+    const first = buildImagePrompt({ visual: 'a desk', index: 0 });
+    const second = buildImagePrompt({ visual: 'a desk', index: 1 });
+    expect(first).not.toBe(second);
+  });
+
+  it('keeps the creator’s own direction at the front', () => {
+    const prompt = buildImagePrompt({ visual: 'a red door in a white wall' });
+    expect(prompt.startsWith('a red door in a white wall')).toBe(true);
+  });
+
+  it('falls back to a usable style for an unknown niche', () => {
+    const prompt = buildImagePrompt({ visual: 'a river', niche: 'unknown' as never });
+    expect(prompt).toMatch(/cinematic/i);
+  });
+});
+
+describe('the brief given to the script model', () => {
+  it('tells the model what the pipeline can actually render', () => {
+    // Without this, the model writes visual directions nothing can produce —
+    // montages, camera moves, actors — and every scene fails to illustrate.
+    expect(PIPELINE_BRIEF).toMatch(/ONE still image/);
+    expect(PIPELINE_BRIEF).toMatch(/9:16/);
+    expect(PIPELINE_BRIEF).toMatch(/synthetic voice/i);
+    expect(PIPELINE_BRIEF).toMatch(/[Cc]aptions are burned in/);
+  });
+
+  it('gives each niche its own writing direction', () => {
+    expect(nicheDirection('scary-story').writing).not.toBe(nicheDirection('finance').writing);
+    expect(nicheDirection().writing.length).toBeGreaterThan(0);
+  });
+});
+
+describe('failure messages', () => {
+  it('explains a rejected key instead of quoting the provider', () => {
+    const message = humanizeError(
+      'Anthropic API error 401: {"type":"error","error":{"type":"authentication_error"}}',
+    );
+    expect(message).toMatch(/key was rejected/i);
+    expect(message).toMatch(/Settings/);
+    expect(message).not.toMatch(/authentication_error/);
+  });
+
+  it('names the real problem for quota and rate limits', () => {
+    expect(humanizeError('429 rate_limit_exceeded')).toMatch(/rate-limiting/i);
+    expect(humanizeError('insufficient_quota: check your billing')).toMatch(/out of credit/i);
+  });
+
+  it('says it is the network when it is the network', () => {
+    expect(humanizeError('fetch failed: getaddrinfo ENOTFOUND api.openai.com')).toMatch(
+      /internet connection/i,
+    );
+  });
+
+  it('keeps render errors visible, since they name the broken filter', () => {
+    expect(humanizeError('ffmpeg exited: Invalid argument in zoompan')).toMatch(/zoompan/);
   });
 });

@@ -125,13 +125,39 @@ export async function startProduction(
       const current = jobs.get(id);
       if (!current) return;
       const aborted = controller.signal.aborted;
+      const raw = error instanceof Error ? error.message : String(error);
       current.status = aborted ? 'cancelled' : 'failed';
-      current.error = error instanceof Error ? error.message : String(error);
-      log.error('production failed', { id, error: current.error });
+      current.error = humanizeError(raw);
+      log.error('production failed', { id, error: raw });
       await evict();
     });
 
   return job;
+}
+
+/**
+ * Turn a provider failure into something a creator can act on.
+ *
+ * The raw text is accurate and useless: nobody should have to read
+ * `{"type":"authentication_error"}` to learn they pasted the wrong key.
+ */
+export function humanizeError(raw: string): string {
+  if (/401|authentication_error|invalid x-api-key|Incorrect API key/i.test(raw)) {
+    return 'That API key was rejected. Check it in Settings — or clear it to keep using the offline stand-ins.';
+  }
+  if (/429|rate.?limit/i.test(raw)) {
+    return 'The AI provider is rate-limiting this key. Wait a minute and try again.';
+  }
+  if (/insufficient_quota|billing|credit balance/i.test(raw)) {
+    return 'That account is out of credit with the AI provider. Top it up, or clear the key in Settings to use the offline stand-ins.';
+  }
+  if (/ENOTFOUND|ECONNREFUSED|fetch failed|network/i.test(raw)) {
+    return 'Could not reach the AI provider. Check your internet connection.';
+  }
+  if (/ffmpeg|filter|Invalid argument/i.test(raw)) {
+    return `The render failed. ${raw.slice(0, 200)}`;
+  }
+  return raw.slice(0, 300);
 }
 
 export function getProduction(id: string): StudioJob | undefined {
