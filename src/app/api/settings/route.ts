@@ -1,54 +1,59 @@
-import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { describeProviders, resetProviders } from '@/server/ai/registry';
-import { renderCapability } from '@/server/video/capability';
-import { describeSettings, saveSettings } from '@/server/settings/store';
-import { libraryRoot } from '@/server/studio/library';
-import { logger } from '@/server/obs/logger';
-
-const log = logger.child({ route: 'settings' });
-
-const bodySchema = z.object({
-  // An empty string clears a key; omitting a field leaves it untouched.
-  anthropicApiKey: z.string().max(300).optional(),
-  openaiApiKey: z.string().max(300).optional(),
-  elevenLabsApiKey: z.string().max(300).optional(),
-  anthropicModel: z.string().max(100).optional(),
-});
-
-/** What is configured — never the keys themselves. */
-export async function GET(): Promise<Response> {
-  return NextResponse.json({
-    keys: describeSettings(),
-    providers: describeProviders(),
-    rendering: await renderCapability(),
-    storageDir: libraryRoot(),
-  });
-}
+import { getSettings, updateSettings } from '@/server/store/db';
+import { providerNames } from '@/server/ai/registry';
+import { configurablePlatforms, isExpired } from '@/server/publish';
+import { hasFfmpeg } from '@/server/video/ffmpeg';
+import { dataDir } from '@/server/store/paths';
+import { body, handle } from '@/server/http';
+import type { SettingsView } from '@/lib/types';
 
 /**
- * Save credentials.
- *
- * Providers are rebuilt immediately, so a pasted key takes effect on the next
- * video rather than after a restart — which nobody would think to do.
+ * Keys are write-only over the API: they go in, and only ever come back as a
+ * boolean. Nothing that reaches the browser should be able to read them back
+ * out, including this app's own settings screen.
  */
-export async function POST(request: Request): Promise<Response> {
-  let parsed;
-  try {
-    parsed = bodySchema.parse(await request.json());
-  } catch (error) {
-    return NextResponse.json(
-      {
-        error:
-          error instanceof z.ZodError ? (error.issues[0]?.message ?? 'Invalid request') : 'Invalid JSON',
-      },
-      { status: 400 },
+const input = z.object({
+  anthropicApiKey: z.string().trim().nullable().optional(),
+  openaiApiKey: z.string().trim().nullable().optional(),
+  outputDir: z.string().trim().nullable().optional(),
+});
+
+async function view(): Promise<SettingsView> {
+  const [settings, providers, ffmpeg] = await Promise.all([
+    getSettings(),
+    providerNames(),
+    hasFfmpeg(),
+  ]);
+
+  return {
+    anthropic: Boolean(settings.anthropicApiKey?.trim() || process.env.ANTHROPIC_API_KEY?.trim()),
+    openai: Boolean(settings.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim()),
+    outputDir: settings.outputDir ?? dataDir(),
+    providers,
+    accounts: settings.accounts.map((account) => ({
+      platform: account.platform,
+      displayName: account.displayName,
+      expired: isExpired(account),
+      connectedAt: account.connectedAt,
+    })),
+    configurable: configurablePlatforms(),
+    ffmpeg,
+  };
+}
+
+export async function GET() {
+  return handle(view);
+}
+
+export async function PATCH(request: Request) {
+  return handle(async () => {
+    const patch = await body(request, input);
+    // An empty string means "clear this key", which is different from the
+    // field being absent, which means "leave it alone".
+    const normalised = Object.fromEntries(
+      Object.entries(patch).map(([key, value]) => [key, value === '' ? null : value]),
     );
-  }
-
-  saveSettings(parsed);
-  resetProviders();
-  log.info('credentials updated');
-
-  return NextResponse.json({ keys: describeSettings(), providers: describeProviders() });
+    await updateSettings(normalised);
+    return view();
+  });
 }

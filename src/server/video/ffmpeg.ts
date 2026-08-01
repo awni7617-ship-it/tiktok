@@ -1,169 +1,100 @@
 import { spawn } from 'node:child_process';
-import { access, constants } from 'node:fs/promises';
-import type { MediaProbe } from '@/lib/types';
-import { logger } from '@/server/obs/logger';
+import fs from 'node:fs/promises';
 
 /**
- * Thin, well-behaved wrapper around the ffmpeg/ffprobe binaries.
+ * ffmpeg and ffprobe access.
  *
- * Deliberately does not shell out through a string: arguments are passed as an
- * array so a filename containing a quote or a semicolon can never become a
- * command injection. Progress is parsed from ffmpeg's `-progress pipe:1`
- * stream so the UI can show a real percentage rather than a spinner.
+ * The binaries ship as npm packages, so rendering works on a fresh clone with
+ * nothing installed. A system ffmpeg on `PATH` wins when the bundled one is
+ * missing (some platforms have no prebuilt binary), and `FFMPEG_PATH` /
+ * `FFPROBE_PATH` override both.
  */
 
-const log = logger.child({ module: 'ffmpeg' });
+let ffmpegPath: string | null | undefined;
+let ffprobePath: string | null | undefined;
 
-export interface FfmpegPaths {
-  ffmpeg: string;
-  ffprobe: string;
-}
-
-export function resolvePaths(): FfmpegPaths {
-  return {
-    ffmpeg: process.env['FFMPEG_PATH'] || 'ffmpeg',
-    ffprobe: process.env['FFPROBE_PATH'] || 'ffprobe',
-  };
-}
-
-/** True when both binaries are present and executable. */
-export async function isFfmpegAvailable(): Promise<boolean> {
-  const paths = resolvePaths();
-  const results = await Promise.all(
-    [paths.ffmpeg, paths.ffprobe].map(async (binary) => {
-      if (binary.includes('/')) {
-        try {
-          await access(binary, constants.X_OK);
-          return true;
-        } catch {
-          return false;
-        }
-      }
-      return runOk(binary, ['-version']);
-    }),
-  );
-  return results.every(Boolean);
-}
-
-async function runOk(command: string, args: string[]): Promise<boolean> {
+function fromPackage(name: 'ffmpeg-static' | 'ffprobe-static'): string | null {
   try {
-    const result = await run(command, args, { timeoutMs: 10_000 });
-    return result.code === 0;
+    // Resolved lazily: importing these at module load pulls a native path
+    // lookup into every process that touches this file, including the browser
+    // bundle's type-only imports.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require(name) as unknown;
+    if (typeof mod === 'string') return mod;
+    if (mod && typeof mod === 'object' && 'path' in mod) {
+      const p = (mod as { path?: unknown }).path;
+      if (typeof p === 'string') return p;
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export interface RunResult {
-  code: number;
-  stdout: string;
-  stderr: string;
+export function ffmpegBinary(): string | null {
+  if (ffmpegPath !== undefined) return ffmpegPath;
+  ffmpegPath = process.env.FFMPEG_PATH?.trim() || fromPackage('ffmpeg-static') || null;
+  return ffmpegPath;
 }
 
-export interface RunOptions {
-  timeoutMs?: number;
-  /** Called with a 0-1 fraction as ffmpeg reports progress. */
-  onProgress?: (fraction: number, raw: Record<string, string>) => void;
-  /** Total duration in seconds, needed to turn `out_time` into a fraction. */
-  totalDurationSec?: number;
-  signal?: AbortSignal;
+export function ffprobeBinary(): string | null {
+  if (ffprobePath !== undefined) return ffprobePath;
+  ffprobePath = process.env.FFPROBE_PATH?.trim() || fromPackage('ffprobe-static') || null;
+  return ffprobePath;
+}
+
+/** Whether rendering is possible at all. Surfaced in settings and health. */
+export async function hasFfmpeg(): Promise<boolean> {
+  const bin = ffmpegBinary();
+  if (!bin) return false;
+  try {
+    await fs.access(bin);
+    return true;
+  } catch {
+    // A bare command name like `ffmpeg` is not a path; trust PATH resolution.
+    return !bin.includes('/') && !bin.includes('\\');
+  }
 }
 
 /**
- * Run a process to completion, capturing output.
+ * Whether this ffmpeg was built with a given filter.
  *
- * stderr is capped at 512KB: ffmpeg is chatty and a long render can otherwise
- * accumulate tens of megabytes of frame logs in memory for no benefit.
+ * Builds vary in what they compile in — the widely used static builds ship
+ * without `drawtext` because it needs freetype — so anything optional is
+ * checked before it is relied on rather than discovered as a failed render.
  */
-export function run(
-  command: string,
-  args: string[],
-  options: RunOptions = {},
-): Promise<RunResult> {
-  const { timeoutMs = 0, onProgress, totalDurationSec, signal } = options;
+const filterCache = new Map<string, boolean>();
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+export async function hasFilter(name: string): Promise<boolean> {
+  const cached = filterCache.get(name);
+  if (cached !== undefined) return cached;
 
-    let stdout = '';
-    let stderr = '';
-    const maxBuffer = 512 * 1024;
-    let settled = false;
+  const bin = ffmpegBinary();
+  if (!bin) return false;
 
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            child.kill('SIGKILL');
-            if (!settled) {
-              settled = true;
-              reject(new Error(`${command} timed out after ${timeoutMs}ms`));
-            }
-          }, timeoutMs)
-        : null;
-
-    const onAbort = () => {
-      child.kill('SIGTERM');
-      // Give ffmpeg a moment to flush the output file before forcing it.
-      setTimeout(() => child.kill('SIGKILL'), 2000);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-
-    child.stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString();
-      if (onProgress) {
-        const parsed = parseProgress(text);
-        if (parsed) {
-          const outTime = Number.parseFloat(parsed['out_time_ms'] ?? '0') / 1_000_000;
-          if (totalDurationSec && totalDurationSec > 0) {
-            onProgress(Math.min(1, outTime / totalDurationSec), parsed);
-          }
-        }
-      }
-      if (stdout.length < maxBuffer) stdout += text;
-    });
-
-    child.stderr.on('data', (chunk: Buffer) => {
-      if (stderr.length < maxBuffer) stderr += chunk.toString();
-    });
-
-    child.on('error', (error) => {
-      if (timer) clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      if (!settled) {
-        settled = true;
-        reject(error);
-      }
-    });
-
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      if (!settled) {
-        settled = true;
-        resolve({ code: code ?? -1, stdout, stderr });
-      }
+  const available = await new Promise<boolean>((resolve) => {
+    const child = spawn(bin, ['-hide_banner', '-filters'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()));
+    child.on('error', () => resolve(false));
+    child.on('close', () => {
+      // Lines read `TSC name  A->A  description`, so the name is the second
+      // column — matching anywhere would hit descriptions too.
+      const names = out
+        .split('\n')
+        .map((line) => line.trim().split(/\s+/)[1])
+        .filter(Boolean);
+      resolve(names.includes(name));
     });
   });
-}
 
-/** Parse one `-progress pipe:1` block into key/value pairs. */
-export function parseProgress(chunk: string): Record<string, string> | null {
-  const entries = chunk
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.includes('='))
-    .map((line) => {
-      const index = line.indexOf('=');
-      return [line.slice(0, index), line.slice(index + 1)] as const;
-    });
-
-  return entries.length > 0 ? Object.fromEntries(entries) : null;
+  filterCache.set(name, available);
+  return available;
 }
 
 export class FfmpegError extends Error {
   constructor(
     message: string,
-    readonly code: number,
     readonly stderr: string,
   ) {
     super(message);
@@ -171,108 +102,72 @@ export class FfmpegError extends Error {
   }
 }
 
-/** Run ffmpeg, throwing a rich error on non-zero exit. */
-export async function ffmpeg(args: string[], options: RunOptions = {}): Promise<RunResult> {
-  const { ffmpeg: binary } = resolvePaths();
-  log.debug('running ffmpeg', { args: args.join(' ').slice(0, 2000) });
-
-  const result = await run(binary, args, options);
-  if (result.code !== 0) {
-    throw new FfmpegError(
-      `ffmpeg exited with code ${result.code}: ${lastLines(result.stderr, 8)}`,
-      result.code,
-      result.stderr,
-    );
-  }
-  return result;
-}
-
-export async function ffprobe(args: string[], options: RunOptions = {}): Promise<RunResult> {
-  const { ffprobe: binary } = resolvePaths();
-  const result = await run(binary, args, options);
-  if (result.code !== 0) {
-    throw new FfmpegError(
-      `ffprobe exited with code ${result.code}: ${lastLines(result.stderr, 5)}`,
-      result.code,
-      result.stderr,
-    );
-  }
-  return result;
-}
-
-function lastLines(text: string, count: number): string {
-  return text.trim().split('\n').slice(-count).join('\n');
-}
-
-// ---------------------------------------------------------------------------
-// Probing
-// ---------------------------------------------------------------------------
-
-export function probeArgs(input: string): string[] {
-  return [
-    '-v', 'error',
-    '-print_format', 'json',
-    '-show_format',
-    '-show_streams',
-    input,
-  ];
-}
-
 /**
- * Parse ffprobe JSON into our `MediaProbe`.
+ * Run ffmpeg to completion.
  *
- * Frame rate arrives as a rational string (`30000/1001`), duration can live on
- * either the stream or the container, and audio-only files have no video
- * stream at all — all handled here so callers get one predictable shape.
+ * stderr is captured rather than streamed because ffmpeg writes progress
+ * there; only the tail is kept, which is where the actual error lives.
  */
-export function parseProbe(json: string): MediaProbe {
-  const data = JSON.parse(json) as {
-    format?: { duration?: string; bit_rate?: string };
-    streams?: Array<Record<string, unknown>>;
-  };
+export function runFfmpeg(args: string[], timeoutMs = 10 * 60_000): Promise<void> {
+  const bin = ffmpegBinary();
+  if (!bin) return Promise.reject(new FfmpegError('ffmpeg is not available', ''));
 
-  const streams = data.streams ?? [];
-  const video = streams.find((s) => s['codec_type'] === 'video');
-  const audio = streams.find((s) => s['codec_type'] === 'audio');
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, ['-hide_banner', '-loglevel', 'error', '-y', ...args], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
 
-  const durationSec =
-    toNumber(data.format?.duration) ??
-    toNumber(video?.['duration'] as string | undefined) ??
-    toNumber(audio?.['duration'] as string | undefined) ??
-    0;
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+      if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
+    });
 
-  const bitrate = toNumber(data.format?.bit_rate);
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new FfmpegError(`ffmpeg timed out after ${Math.round(timeoutMs / 1000)}s`, stderr));
+    }, timeoutMs);
 
-  return {
-    durationSec: Math.max(0, durationSec),
-    width: toNumber(video?.['width']) ?? 0,
-    height: toNumber(video?.['height']) ?? 0,
-    fps: parseFrameRate((video?.['avg_frame_rate'] as string) || (video?.['r_frame_rate'] as string)),
-    hasAudio: Boolean(audio),
-    audioChannels: toNumber(audio?.['channels']) ?? 0,
-    audioSampleRate: toNumber(audio?.['sample_rate']) ?? 0,
-    videoCodec: (video?.['codec_name'] as string) ?? null,
-    audioCodec: (audio?.['codec_name'] as string) ?? null,
-    bitrateKbps: bitrate !== null ? Math.round(bitrate / 1000) : null,
-  };
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(new FfmpegError(`ffmpeg failed to start: ${error.message}`, stderr));
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new FfmpegError(`ffmpeg exited with code ${code}`, stderr.trim()));
+    });
+  });
 }
 
-/** `30000/1001` → 29.97. Returns 0 for `0/0`, which ffprobe emits for images. */
-export function parseFrameRate(value: string | undefined): number {
-  if (!value) return 0;
-  const [numerator, denominator] = value.split('/').map(Number);
-  if (!numerator || !denominator) return 0;
-  return Math.round((numerator / denominator) * 1000) / 1000;
-}
+/** Duration of a media file in seconds. */
+export async function probeDuration(file: string): Promise<number> {
+  const bin = ffprobeBinary();
+  if (!bin) throw new Error('ffprobe is not available');
 
-function toNumber(value: unknown): number | null {
-  if (value === undefined || value === null) return null;
-  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value));
-  return Number.isFinite(parsed) ? parsed : null;
-}
+  const args = [
+    '-v',
+    'error',
+    '-show_entries',
+    'format=duration',
+    '-of',
+    'default=noprint_wrappers=1:nokey=1',
+    file,
+  ];
 
-/** Probe a file on disk or a URL ffmpeg can read. */
-export async function probeMedia(input: string): Promise<MediaProbe> {
-  const result = await ffprobe(probeArgs(input), { timeoutMs: 60_000 });
-  return parseProbe(result.stdout);
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (c: Buffer) => (out += c.toString()));
+    child.stderr.on('data', (c: Buffer) => (err += c.toString()));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(`ffprobe exited with ${code}: ${err.trim()}`));
+      const seconds = Number.parseFloat(out.trim());
+      if (!Number.isFinite(seconds)) return reject(new Error(`ffprobe gave no duration for ${file}`));
+      resolve(seconds);
+    });
+  });
 }

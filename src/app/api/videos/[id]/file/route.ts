@@ -1,69 +1,71 @@
-import { createReadStream } from 'node:fs';
+import fs from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { Readable } from 'node:stream';
-import { NextResponse } from 'next/server';
-import { getLibraryVideo } from '@/server/studio/library';
+import { getVideo } from '@/server/store/db';
+import { resolveData } from '@/server/store/paths';
+import { slug } from '@/lib/id';
 
 /**
- * Stream a saved video.
+ * Serve the rendered mp4.
  *
- * Ranged, so scrubbing does not re-download the file. The path comes from the
- * library record, never from the request, so nothing the browser sends can
- * reach the filesystem.
+ * Streamed rather than buffered, and range-aware, because `<video>` issues a
+ * range request for the first bytes and a browser that gets a 200 with the
+ * whole file back cannot seek.
  */
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> },
-): Promise<Response> {
-  const { id } = await params;
-  const video = await getLibraryVideo(id);
-  if (!video) return NextResponse.json({ error: 'No such video' }, { status: 404 });
-
-  let size: number;
-  try {
-    size = (await stat(video.path)).size;
-  } catch {
-    return NextResponse.json({ error: 'The file is missing from disk' }, { status: 410 });
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const video = await getVideo((await params).id);
+  if (!video?.file) {
+    return new Response('Not found', { status: 404 });
   }
 
-  const filename = `${video.title.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'video'}.mp4`;
-  const download = new URL(request.url).searchParams.has('download');
-  const disposition = `${download ? 'attachment' : 'inline'}; filename="${filename}"`;
+  let absolute: string;
+  try {
+    absolute = resolveData(video.file);
+  } catch {
+    return new Response('Not found', { status: 404 });
+  }
+
+  const info = await stat(absolute).catch(() => null);
+  if (!info?.isFile()) {
+    return new Response('The rendered file is missing', { status: 404 });
+  }
+
+  const filename = `${slug(video.title)}.mp4`;
   const range = request.headers.get('range');
 
+  const baseHeaders: Record<string, string> = {
+    'Content-Type': 'video/mp4',
+    'Accept-Ranges': 'bytes',
+    'Content-Disposition': `inline; filename="${filename}"`,
+  };
+
   if (range) {
-    const match = /bytes=(\d*)-(\d*)/.exec(range);
-    const start = Number(match?.[1] ?? 0);
-    const end = match?.[2] ? Number(match[2]) : size - 1;
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+    if (match) {
+      const start = match[1] ? Number.parseInt(match[1], 10) : 0;
+      const end = match[2] ? Number.parseInt(match[2], 10) : info.size - 1;
 
-    if (Number.isNaN(start) || start >= size || end >= size || start > end) {
-      return new NextResponse(null, { status: 416, headers: { 'Content-Range': `bytes */${size}` } });
+      if (Number.isFinite(start) && start < info.size && end >= start) {
+        const last = Math.min(end, info.size - 1);
+        const stream = fs.createReadStream(absolute, { start, end: last });
+        return new Response(stream as unknown as ReadableStream, {
+          status: 206,
+          headers: {
+            ...baseHeaders,
+            'Content-Range': `bytes ${start}-${last}/${info.size}`,
+            'Content-Length': String(last - start + 1),
+          },
+        });
+      }
+      return new Response('Range not satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${info.size}` },
+      });
     }
-
-    return new NextResponse(
-      Readable.toWeb(createReadStream(video.path, { start, end })) as unknown as ReadableStream,
-      {
-        status: 206,
-        headers: {
-          'Content-Type': 'video/mp4',
-          'Content-Length': String(end - start + 1),
-          'Content-Range': `bytes ${start}-${end}/${size}`,
-          'Accept-Ranges': 'bytes',
-          'Content-Disposition': disposition,
-        },
-      },
-    );
   }
 
-  return new NextResponse(
-    Readable.toWeb(createReadStream(video.path)) as unknown as ReadableStream,
-    {
-      headers: {
-        'Content-Type': 'video/mp4',
-        'Content-Length': String(size),
-        'Accept-Ranges': 'bytes',
-        'Content-Disposition': disposition,
-      },
-    },
-  );
+  const stream = fs.createReadStream(absolute);
+  return new Response(stream as unknown as ReadableStream, {
+    status: 200,
+    headers: { ...baseHeaders, 'Content-Length': String(info.size) },
+  });
 }

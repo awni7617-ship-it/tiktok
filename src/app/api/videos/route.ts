@@ -1,27 +1,16 @@
-import { NextResponse } from 'next/server';
-import { listLibrary } from '@/server/studio/library';
+import { listChannels, listVideos } from '@/server/store/db';
+import { handle } from '@/server/http';
 
-/**
- * Every video this installation has made.
- *
- * Paths stay on the server: the browser gets an id and a URL, never a
- * filesystem location.
- */
-export async function GET(): Promise<Response> {
-  const videos = await listLibrary();
+export async function GET(request: Request) {
+  return handle(async () => {
+    const channelId = new URL(request.url).searchParams.get('channelId');
+    const [videos, channels] = await Promise.all([listVideos(), listChannels()]);
 
-  return NextResponse.json({
-    videos: videos.map((video) => ({
-      id: video.id,
-      title: video.title,
-      createdAt: video.createdAt,
-      durationSec: video.durationSec,
-      sceneCount: video.sceneCount,
-      width: video.width,
-      height: video.height,
-      bytes: video.bytes,
-      prompt: video.prompt,
-      url: `/api/videos/${video.id}/file`,
-    })),
+    return {
+      videos: channelId ? videos.filter((v) => v.channelId === channelId) : videos,
+      // Sent alongside so the library can label each video with its channel
+      // without a request per row.
+      channels: channels.map((c) => ({ id: c.id, name: c.name })),
+    };
   });
 }

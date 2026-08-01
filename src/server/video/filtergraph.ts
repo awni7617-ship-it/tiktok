@@ -1,782 +1,258 @@
-import type {
-  AudioPlan,
-  CropKeyframe,
-  EditPlan,
-  ExportPreset,
-  MotionCue,
-  ReframePlan,
-  VideoEnhancePlan,
-} from '@/lib/types';
-import { round } from '@/lib/time';
+import { FRAME_HEIGHT, FRAME_WIDTH } from '../ai/types';
+import type { MusicBed } from '@/lib/catalog';
 
 /**
- * ffmpeg filter-graph compiler.
+ * The ffmpeg filter graph, built as a pure function.
  *
- * Turns an `EditPlan` into the filter chain and argument list that renders it.
- * Kept entirely separate from process execution so the graph can be unit-tested
- * — filter graphs are notoriously easy to break and notoriously hard to debug
- * from a render failure three minutes into a job.
- *
- * Conventions:
- *   - labels are `[v0]`, `[a0]`, … and always consumed exactly once
- *   - every numeric value is rounded before interpolation; ffmpeg rejects
- *     `1e-7` style exponent notation in several filters
+ * Nothing here touches the filesystem or spawns a process — it takes a
+ * timeline and returns argv. That makes the hardest part of the renderer
+ * testable without ffmpeg installed, and it means a broken graph shows up as a
+ * failing assertion on a string rather than a corrupt mp4 twenty minutes into
+ * a render.
  */
 
-/** Escape a value used inside a filter argument (`:` and `\` are separators). */
-export function escapeFilterValue(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+export const FPS = 30;
+/** Crossfade length between scenes. Long enough to read as a dissolve. */
+export const XFADE = 0.4;
+
+export interface TimelineScene {
+  /** Absolute path to the scene's still image. */
+  image: string;
+  /** Absolute path to the scene's narration audio. */
+  audio: string;
+  /** Measured narration duration in seconds. */
+  seconds: number;
+  /** Narration text, burned in as captions. */
+  narration: string;
 }
 
-/**
- * Escape a path for filters that take a filename (subtitles, movie).
- * These parse their argument twice, so separators need double escaping.
- */
-export function escapeFilterPath(path: string): string {
-  return path
-    .replace(/\\/g, '/')
-    .replace(/:/g, '\\\\:')
-    .replace(/'/g, "\\\\'")
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]');
-}
-
-export interface FilterNode {
-  filter: string;
-  args?: Record<string, string | number | boolean | undefined>;
-  inputs: string[];
-  outputs: string[];
-}
-
-export function renderNode(node: FilterNode): string {
-  const inputs = node.inputs.map((label) => `[${label}]`).join('');
-  const outputs = node.outputs.map((label) => `[${label}]`).join('');
-
-  const args = node.args
-    ? Object.entries(node.args)
-        .filter(([, value]) => value !== undefined && value !== null && value !== '')
-        .map(([key, value]) =>
-          typeof value === 'number' ? `${key}=${round(value, 6)}` : `${key}=${value}`,
-        )
-        .join(':')
-    : '';
-
-  return `${inputs}${node.filter}${args ? `=${args}` : ''}${outputs}`;
-}
-
-export function renderGraph(nodes: FilterNode[]): string {
-  return nodes.map(renderNode).join(';');
-}
-
-/** Incrementing label allocator so chains never collide. */
-export class LabelAllocator {
-  private counter = 0;
-
-  next(prefix: string): string {
-    this.counter += 1;
-    return `${prefix}${this.counter}`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Trim & concat
-// ---------------------------------------------------------------------------
-
-/**
- * Build the trim/concat section that applies the cut plan.
- *
- * Each kept segment becomes a `trim` + `setpts` pair (and `atrim` + `asetpts`
- * for audio), then all segments are concatenated. Retimed segments get
- * `setpts`/`atempo` factors applied here so pacing survives the concat.
- *
- * `atempo` only accepts 0.5–2.0, so out-of-range factors are decomposed into a
- * chain — required for correctness even though our pacing caps stay well inside
- * the range, because manual speed edits do not.
- */
-export function buildTrimConcat(
-  plan: EditPlan,
-  labels: LabelAllocator,
-  options: { videoInput: string; audioInput: string; hasAudio: boolean },
-): { nodes: FilterNode[]; videoOut: string; audioOut: string | null } {
-  const segments = plan.cutPlan.kept;
-  const nodes: FilterNode[] = [];
-
-  if (segments.length === 0) {
-    return { nodes, videoOut: options.videoInput, audioOut: options.hasAudio ? options.audioInput : null };
-  }
-
-  // A single full-length 1x segment needs no trimming at all.
-  const isPassthrough =
-    segments.length === 1 &&
-    segments[0]!.sourceStart <= 0.001 &&
-    Math.abs(segments[0]!.sourceEnd - plan.sourceDurationSec) < 0.05 &&
-    Math.abs(segments[0]!.speed - 1) < 0.001;
-
-  if (isPassthrough) {
-    return { nodes, videoOut: options.videoInput, audioOut: options.hasAudio ? options.audioInput : null };
-  }
-
-  const videoLabels: string[] = [];
-  const audioLabels: string[] = [];
-
-  for (const segment of segments) {
-    const trimmed = labels.next('vtrim');
-    const vLabel = labels.next('vseg');
-    const isRetimed = Math.abs(segment.speed - 1) >= 0.001;
-
-    nodes.push({
-      filter: 'trim',
-      args: { start: round(segment.sourceStart, 3), end: round(segment.sourceEnd, 3) },
-      inputs: [options.videoInput],
-      outputs: [trimmed],
-    });
-
-    // setpts takes a bare expression rather than key=value pairs, so it is
-    // emitted as a pre-formatted filter string with no args.
-    nodes.push({
-      filter: isRetimed
-        ? `setpts=(PTS-STARTPTS)/${round(segment.speed, 4)}`
-        : 'setpts=PTS-STARTPTS',
-      inputs: [trimmed],
-      outputs: [vLabel],
-    });
-
-    videoLabels.push(vLabel);
-
-    if (options.hasAudio) {
-      const aTrimmed = labels.next('atrim');
-      const aReset = labels.next('areset');
-      const aLabel = labels.next('aseg');
-
-      nodes.push({
-        filter: 'atrim',
-        args: { start: round(segment.sourceStart, 3), end: round(segment.sourceEnd, 3) },
-        inputs: [options.audioInput],
-        outputs: [aTrimmed],
-      });
-      nodes.push({
-        filter: 'asetpts=PTS-STARTPTS',
-        inputs: [aTrimmed],
-        outputs: [aReset],
-      });
-
-      const tempoChain = decomposeTempo(segment.speed);
-      let cursor = aReset;
-
-      tempoChain.forEach((factor, index) => {
-        const out = index === tempoChain.length - 1 ? aLabel : labels.next('atempo');
-        nodes.push({
-          filter: `atempo=${round(factor, 4)}`,
-          inputs: [cursor],
-          outputs: [out],
-        });
-        cursor = out;
-      });
-
-      if (tempoChain.length === 0) {
-        // Speed is 1x: pass through so the segment still owns a stable label.
-        nodes.push({ filter: 'anull', inputs: [cursor], outputs: [aLabel] });
-      }
-
-      audioLabels.push(aLabel);
-    }
-  }
-
-  const videoOut = labels.next('vcat');
-  const audioOut = options.hasAudio ? labels.next('acat') : null;
-
-  if (options.hasAudio && audioOut) {
-    const interleaved: string[] = [];
-    for (let i = 0; i < videoLabels.length; i++) {
-      interleaved.push(videoLabels[i]!, audioLabels[i]!);
-    }
-    nodes.push({
-      filter: 'concat',
-      args: { n: segments.length, v: 1, a: 1 },
-      inputs: interleaved,
-      outputs: [videoOut, audioOut],
-    });
-  } else {
-    nodes.push({
-      filter: 'concat',
-      args: { n: segments.length, v: 1, a: 0 },
-      inputs: videoLabels,
-      outputs: [videoOut],
-    });
-  }
-
-  return { nodes, videoOut, audioOut };
+export interface TimelineOptions {
+  scenes: TimelineScene[];
+  /** Null for no music bed. */
+  music: MusicBed | null;
+  outFile: string;
+  /**
+   * Path to the generated ASS caption file, or null to render without
+   * captions — which is what happens on an ffmpeg built without libass.
+   */
+  subtitleFile: string | null;
 }
 
 /**
- * `atempo` is limited to [0.5, 2.0]. Decompose an arbitrary factor into a chain
- * of in-range factors whose product equals the target. Returns `[]` for 1x.
+ * Each scene holds for its narration plus the crossfade it overlaps with the
+ * next one, so no words are lost under a dissolve.
  */
-export function decomposeTempo(speed: number): number[] {
-  if (!Number.isFinite(speed) || speed <= 0) return [];
-  if (Math.abs(speed - 1) < 0.001) return [];
-
-  const factors: number[] = [];
-  let remaining = speed;
-
-  while (remaining > 2.0) {
-    factors.push(2.0);
-    remaining /= 2.0;
-  }
-  while (remaining < 0.5) {
-    factors.push(0.5);
-    remaining /= 0.5;
-  }
-  factors.push(round(remaining, 4));
-  return factors;
+function sceneHold(seconds: number, isLast: boolean): number {
+  return isLast ? seconds : seconds + XFADE;
 }
 
-// ---------------------------------------------------------------------------
-// Reframe
-// ---------------------------------------------------------------------------
-
-/**
- * Compile the crop keyframes into an animated `crop` filter.
- *
- * ffmpeg has no keyframe primitive, so the animation is expressed as a nested
- * `if(lt(t,...))` expression that linearly interpolates between keyframes.
- * Static plans collapse to constants, which is both faster and far easier to
- * read in a render log.
- */
-export function buildReframeFilter(
-  reframe: ReframePlan,
-  labels: LabelAllocator,
-  input: string,
-): { nodes: FilterNode[]; output: string } {
-  const output = labels.next('vcrop');
-  const frames = reframe.keyframes;
-  const first = frames[0];
-
-  if (!first) {
-    return { nodes: [], output: input };
+/** Where each scene's narration begins on the finished timeline. */
+export function sceneStarts(scenes: TimelineScene[]): number[] {
+  const starts: number[] = [];
+  let cursor = 0;
+  for (const scene of scenes) {
+    starts.push(cursor);
+    cursor += scene.seconds;
   }
+  return starts;
+}
 
-  if (frames.length === 1 || reframe.isStaticFallback) {
-    return {
-      nodes: [
-        {
-          filter: 'crop',
-          args: { w: first.width, h: first.height, x: first.x, y: first.y },
-          inputs: [input],
-          outputs: [output],
-        },
-      ],
-      output,
-    };
-  }
+export function totalDuration(scenes: TimelineScene[]): number {
+  return scenes.reduce((sum, scene) => sum + scene.seconds, 0);
+}
 
-  const xExpr = buildKeyframeExpression(frames, (frame) => frame.x);
-  const yExpr = buildKeyframeExpression(frames, (frame) => frame.y);
-
-  return {
-    nodes: [
-      {
-        filter: 'crop',
-        args: {
-          w: first.width,
-          h: first.height,
-          x: `'${xExpr}'`,
-          y: `'${yExpr}'`,
-        },
-        inputs: [input],
-        outputs: [output],
-      },
-    ],
-    output,
-  };
+/** Output frames a scene occupies, which is what fixes its on-screen length. */
+export function sceneFrames(hold: number): number {
+  return Math.max(2, Math.round(hold * FPS));
 }
 
 /**
- * Build a piecewise-linear ffmpeg expression over keyframes.
+ * A slow push-in per scene.
  *
- * Produces `if(lt(t,T1), A + (B-A)*(t-T0)/(T1-T0), if(lt(t,T2), …))`. Nesting
- * depth equals the keyframe count, so `dropRedundantKeyframes` upstream is what
- * keeps this expression a sane length.
- */
-export function buildKeyframeExpression(
-  frames: CropKeyframe[],
-  pick: (frame: CropKeyframe) => number,
-): string {
-  if (frames.length === 0) return '0';
-  if (frames.length === 1) return String(pick(frames[0]!));
-
-  let expression = String(pick(frames[frames.length - 1]!));
-
-  for (let i = frames.length - 2; i >= 0; i--) {
-    const current = frames[i]!;
-    const next = frames[i + 1]!;
-    const from = pick(current);
-    const to = pick(next);
-    const span = round(next.time - current.time, 4);
-
-    const segment =
-      span <= 0 || from === to
-        ? String(from)
-        : `(${from}+(${to - from})*(t-${round(current.time, 4)})/${span})`;
-
-    expression = `if(lt(t,${round(next.time, 4)}),${segment},${expression})`;
-  }
-
-  return expression;
-}
-
-// ---------------------------------------------------------------------------
-// Motion
-// ---------------------------------------------------------------------------
-
-/**
- * Apply motion cues as a single animated `scale`+`crop` pair.
+ * The image is fed as a *single frame* rather than a looped stream, and
+ * `zoompan`'s `d` produces exactly the frames the scene needs. Looping the
+ * input instead makes zoompan emit `d` frames per looped frame — orders of
+ * magnitude too many — and the trim needed to correct that leaves timestamps
+ * xfade will not accept.
  *
- * `zoompan` is the obvious choice but it is frame-count driven and interacts
- * badly with variable frame rates after a concat. Scaling up and cropping back
- * to the output size gives the same visual result with time-based expressions.
+ * `zoom` steps once per output frame, so the increment is derived from the
+ * frame count to land on the same final zoom however long the scene runs.
+ * Without that, short scenes barely move and long ones zoom uncomfortably far.
+ *
+ * The source is scaled up 2x before zoompan and back down by it: zoompan
+ * samples at integer pixel offsets, and at 1x that quantisation shows up as
+ * judder on a slow move.
  */
-export function buildMotionFilter(
-  cues: MotionCue[],
-  preset: ExportPreset,
-  labels: LabelAllocator,
-  input: string,
-): { nodes: FilterNode[]; output: string } {
-  if (cues.length === 0) return { nodes: [], output: input };
+function kenBurns(index: number, hold: number): string {
+  const frames = sceneFrames(hold);
+  const zoomTo = 1.12;
+  const step = ((zoomTo - 1) / frames).toFixed(6);
 
-  const zoomExpr = buildZoomExpression(cues);
-  const scaled = labels.next('vzoom');
-  const output = labels.next('vmotion');
+  // Labels attach directly to the chain; only the filters between them are
+  // comma-separated.
+  const chain = [
+    `scale=${FRAME_WIDTH * 2}:${FRAME_HEIGHT * 2}:force_original_aspect_ratio=increase`,
+    `crop=${FRAME_WIDTH * 2}:${FRAME_HEIGHT * 2}`,
+    `zoompan=z='min(zoom+${step}\\,${zoomTo})':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${FRAME_WIDTH}x${FRAME_HEIGHT}:fps=${FPS}`,
+    'setsar=1',
+    'format=yuv420p',
+  ].join(',');
 
-  return {
-    nodes: [
-      {
-        filter: 'scale',
-        args: {
-          w: `'trunc(${preset.width}*(${zoomExpr})/2)*2'`,
-          h: `'trunc(${preset.height}*(${zoomExpr})/2)*2'`,
-          eval: 'frame',
-        },
-        inputs: [input],
-        outputs: [scaled],
-      },
-      {
-        filter: 'crop',
-        args: {
-          w: preset.width,
-          h: preset.height,
-          x: '(iw-ow)/2',
-          y: '(ih-oh)/2',
-        },
-        inputs: [scaled],
-        outputs: [output],
-      },
-    ],
-    output,
-  };
+  return `[${index}:v]${chain}[v${index}]`;
 }
 
-/** Piecewise zoom factor over time; 1.0 outside any cue. */
-export function buildZoomExpression(cues: MotionCue[]): string {
-  let expression = '1';
+/** Chain the scenes together with crossfades. */
+function crossfades(count: number, scenes: TimelineScene[]): { filters: string[]; label: string } {
+  if (count === 1) return { filters: [], label: 'v0' };
 
-  for (const cue of [...cues].reverse()) {
-    const span = round(cue.end - cue.start, 4);
-    if (span <= 0) continue;
+  const filters: string[] = [];
+  let label = 'v0';
+  // Offset is measured on the *accumulated* output, which grows by each
+  // scene's narration length (the crossfade is overlap, not extra runtime).
+  let elapsed = 0;
 
-    const progress = `((t-${round(cue.start, 4)})/${span})`;
-    let factor: string;
-
-    switch (cue.kind) {
-      case 'zoom-in':
-      case 'push':
-        factor = `(1+${round(cue.intensity - 1, 4)}*${progress})`;
-        break;
-      case 'zoom-out':
-        factor = `(${round(cue.intensity, 4)}-${round(cue.intensity - 1, 4)}*${progress})`;
-        break;
-      case 'ken-burns':
-        // Ease in and out so the move settles rather than stopping dead.
-        factor = `(1+${round(cue.intensity - 1, 4)}*sin(${progress}*PI))`;
-        break;
-      case 'shake':
-        factor = `(1+${round((cue.intensity - 1) * 0.5, 4)}*sin(t*24))`;
-        break;
-      case 'none':
-      default:
-        continue;
-    }
-
-    expression = `if(between(t,${round(cue.start, 4)},${round(cue.end, 4)}),${factor},${expression})`;
+  for (let i = 1; i < count; i++) {
+    elapsed += scenes[i - 1]!.seconds;
+    const offset = Math.max(0, elapsed - XFADE);
+    const next = i === count - 1 ? 'vchain' : `x${i}`;
+    filters.push(
+      `[${label}][v${i}]xfade=transition=fade:duration=${XFADE}:offset=${offset.toFixed(3)}[${next}]`,
+    );
+    label = next;
   }
 
-  return expression;
-}
-
-// ---------------------------------------------------------------------------
-// Enhancement, scaling, captions
-// ---------------------------------------------------------------------------
-
-/** Denoise / sharpen / colour, in the order that produces the fewest artifacts. */
-export function buildEnhanceFilters(
-  enhance: VideoEnhancePlan,
-  labels: LabelAllocator,
-  input: string,
-): { nodes: FilterNode[]; output: string } {
-  const nodes: FilterNode[] = [];
-  let cursor = input;
-
-  // Denoise before sharpening, or sharpening amplifies the noise it removes.
-  if (enhance.denoise) {
-    const out = labels.next('vdn');
-    nodes.push({
-      filter: 'hqdn3d',
-      args: { luma_spatial: 2, chroma_spatial: 1.5, luma_tmp: 3, chroma_tmp: 2.25 },
-      inputs: [cursor],
-      outputs: [out],
-    });
-    cursor = out;
-  }
-
-  if (enhance.sharpen > 0) {
-    const out = labels.next('vsh');
-    nodes.push({
-      filter: 'unsharp',
-      args: {
-        luma_msize_x: 5,
-        luma_msize_y: 5,
-        luma_amount: round(enhance.sharpen, 2),
-        chroma_amount: 0,
-      },
-      inputs: [cursor],
-      outputs: [out],
-    });
-    cursor = out;
-  }
-
-  const needsColor =
-    Math.abs(enhance.saturation - 1) > 0.001 ||
-    Math.abs(enhance.contrast - 1) > 0.001 ||
-    Math.abs(enhance.brightness) > 0.001;
-
-  if (needsColor) {
-    const out = labels.next('veq');
-    nodes.push({
-      filter: 'eq',
-      args: {
-        saturation: round(enhance.saturation, 3),
-        contrast: round(enhance.contrast, 3),
-        brightness: round(enhance.brightness, 3),
-      },
-      inputs: [cursor],
-      outputs: [out],
-    });
-    cursor = out;
-  }
-
-  return { nodes, output: cursor };
+  return { filters, label };
 }
 
 /**
- * Scale and pad to the exact output frame.
+ * Escape a path for use inside a filter argument.
  *
- * `force_original_aspect_ratio=decrease` + `pad` guarantees no distortion: the
- * image fits inside the frame and any remainder becomes bars. After an
- * auto-reframe crop the aspect already matches, so the pad is a no-op.
+ * A Windows path contains both a drive colon and backslashes, either of which
+ * ends the argument early if passed through untouched.
  */
-export function buildScaleFilters(
-  preset: ExportPreset,
-  labels: LabelAllocator,
-  input: string,
-  padColor = 'black',
-): { nodes: FilterNode[]; output: string } {
-  const scaled = labels.next('vscale');
-  const padded = labels.next('vpad');
-
-  return {
-    nodes: [
-      {
-        filter: 'scale',
-        args: {
-          w: preset.width,
-          h: preset.height,
-          force_original_aspect_ratio: 'decrease',
-          flags: 'lanczos',
-        },
-        inputs: [input],
-        outputs: [scaled],
-      },
-      {
-        filter: 'pad',
-        args: {
-          w: preset.width,
-          h: preset.height,
-          x: '(ow-iw)/2',
-          y: '(oh-ih)/2',
-          color: padColor,
-        },
-        inputs: [scaled],
-        outputs: [padded],
-      },
-    ],
-    output: padded,
-  };
-}
-
-/** Burn an ASS subtitle file into the frame. */
-export function buildCaptionFilter(
-  assPath: string,
-  labels: LabelAllocator,
-  input: string,
-  fontsDir?: string,
-): { nodes: FilterNode[]; output: string } {
-  const output = labels.next('vsub');
-  return {
-    nodes: [
-      {
-        filter: 'subtitles',
-        args: {
-          filename: escapeFilterPath(assPath),
-          fontsdir: fontsDir ? escapeFilterPath(fontsDir) : undefined,
-        },
-        inputs: [input],
-        outputs: [output],
-      },
-    ],
-    output,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Audio chain
-// ---------------------------------------------------------------------------
-
-/**
- * Build the audio processing chain.
- *
- * Order is the standard broadcast chain: high-pass → denoise → de-ess →
- * compress → loudness normalise → limit. Normalising before compressing would
- * make the compressor's threshold meaningless.
- */
-export function buildAudioFilters(
-  audio: AudioPlan,
-  labels: LabelAllocator,
-  input: string,
-): { nodes: FilterNode[]; output: string } {
-  const nodes: FilterNode[] = [];
-  let cursor = input;
-
-  if (audio.highPassHz) {
-    const out = labels.next('ahp');
-    nodes.push({
-      filter: 'highpass',
-      args: { f: audio.highPassHz },
-      inputs: [cursor],
-      outputs: [out],
-    });
-    cursor = out;
-  }
-
-  if (audio.denoise && audio.denoiseStrength > 0) {
-    const out = labels.next('adn');
-    nodes.push({
-      filter: 'afftdn',
-      args: { nr: round(audio.denoiseStrength, 1), nf: -25, tn: 1 },
-      inputs: [cursor],
-      outputs: [out],
-    });
-    cursor = out;
-  }
-
-  if (audio.deEss) {
-    const out = labels.next('ade');
-    nodes.push({
-      filter: 'deesser',
-      args: { i: 0.4, m: 0.5, f: 0.5, s: 'o' },
-      inputs: [cursor],
-      outputs: [out],
-    });
-    cursor = out;
-  }
-
-  if (audio.compressorRatio && audio.compressorRatio > 1) {
-    const out = labels.next('acomp');
-    nodes.push({
-      filter: 'acompressor',
-      args: {
-        threshold: '0.089',
-        ratio: round(audio.compressorRatio, 2),
-        attack: 20,
-        release: 250,
-        makeup: 1.5,
-      },
-      inputs: [cursor],
-      outputs: [out],
-    });
-    cursor = out;
-  }
-
-  const normalized = labels.next('anorm');
-  nodes.push({
-    filter: 'loudnorm',
-    args: {
-      I: round(audio.targetLufs, 1),
-      TP: round(audio.targetTruePeakDb, 1),
-      LRA: round(audio.loudnessRangeLu, 1),
-    },
-    inputs: [cursor],
-    outputs: [normalized],
-  });
-  cursor = normalized;
-
-  // Final safety limiter — loudnorm's own limiter is bypassed in single-pass
-  // mode when the measured values are absent.
-  const limited = labels.next('alim');
-  nodes.push({
-    filter: 'alimiter',
-    args: { limit: round(dbToLinear(audio.targetTruePeakDb), 4), level: 'disabled' },
-    inputs: [cursor],
-    outputs: [limited],
-  });
-
-  return { nodes, output: limited };
-}
-
-export function dbToLinear(db: number): number {
-  return 10 ** (db / 20);
+export function escapeFilterPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
 }
 
 /**
- * Mix a music bed under the narration with sidechain ducking.
+ * A synthesised music bed.
  *
- * `sidechaincompress` keyed on the voice track is what makes music sit *under*
- * speech rather than fighting it — a static gain reduction either buries the
- * music or lets it mask the words.
+ * Generated rather than shipped: a repository is the wrong place to vendor
+ * licensed audio, and a locally synthesised bed is unambiguously clear to use
+ * commercially. It is a chord with a slow amplitude pulse at the bed's tempo.
  */
-export function buildMusicMix(
-  labels: LabelAllocator,
-  voiceInput: string,
-  musicInput: string,
-  options: { gainDb: number; duckDb: number; fadeInSec: number; fadeOutSec: number; durationSec: number },
-): { nodes: FilterNode[]; output: string } {
-  const nodes: FilterNode[] = [];
-
-  const leveled = labels.next('mvol');
-  nodes.push({
-    filter: 'volume',
-    args: { volume: `${round(options.gainDb, 2)}dB` },
-    inputs: [musicInput],
-    outputs: [leveled],
-  });
-
-  const faded = labels.next('mfade');
-  const fadeOutStart = Math.max(0, options.durationSec - options.fadeOutSec);
-  nodes.push({
-    filter: 'afade',
-    args: { t: 'in', st: 0, d: round(options.fadeInSec, 2) },
-    inputs: [leveled],
-    outputs: [faded],
-  });
-
-  const faded2 = labels.next('mfade');
-  nodes.push({
-    filter: 'afade',
-    args: { t: 'out', st: round(fadeOutStart, 2), d: round(options.fadeOutSec, 2) },
-    inputs: [faded],
-    outputs: [faded2],
-  });
-
-  // Split the voice: one copy drives the sidechain key, one is mixed.
-  const voiceA = labels.next('vkey');
-  const voiceB = labels.next('vmix');
-  nodes.push({
-    filter: 'asplit',
-    args: undefined,
-    inputs: [voiceInput],
-    outputs: [voiceA, voiceB],
-  });
-
-  const ducked = labels.next('mduck');
-  nodes.push({
-    filter: 'sidechaincompress',
-    args: {
-      threshold: 0.03,
-      ratio: round(Math.max(2, Math.abs(options.duckDb) / 2), 2),
-      attack: 15,
-      release: 350,
-      makeup: 1,
-    },
-    inputs: [faded2, voiceA],
-    outputs: [ducked],
-  });
-
-  const output = labels.next('amix');
-  nodes.push({
-    filter: 'amix',
-    args: { inputs: 2, duration: 'first', dropout_transition: 0, normalize: 0 },
-    inputs: [voiceB, ducked],
-    outputs: [output],
-  });
-
-  return { nodes, output };
+function musicExpression(bed: MusicBed, duration: number): string {
+  const tones = bed.chord.map((hz) => `sin(2*PI*${hz}*t)`).join('+');
+  const pulse = `(0.55+0.45*sin(2*PI*${(bed.bpm / 60).toFixed(3)}*t))`;
+  const gain = (0.22 / bed.chord.length).toFixed(4);
+  // Fade the last two seconds so the bed resolves rather than being cut off.
+  const tail = `min(1\\,max(0\\,(${duration.toFixed(3)}-t)/2))`;
+  return `aevalsrc='${gain}*${pulse}*(${tones})*${tail}':s=44100:d=${duration.toFixed(3)}`;
 }
 
-// ---------------------------------------------------------------------------
-// Encoder arguments
-// ---------------------------------------------------------------------------
+export interface BuiltCommand {
+  args: string[];
+  /** Exposed for tests and for the progress estimate. */
+  duration: number;
+}
 
-/** Codec, rate-control and container flags for a preset. */
-export function buildEncoderArgs(preset: ExportPreset): string[] {
+export function buildRenderCommand(options: TimelineOptions): BuiltCommand {
+  const { scenes, music, outFile, subtitleFile } = options;
+  if (scenes.length === 0) throw new Error('Cannot render a video with no scenes');
+
+  const duration = totalDuration(scenes);
   const args: string[] = [];
 
-  switch (preset.videoCodec) {
-    case 'h264':
-      args.push(
-        '-c:v', 'libx264',
-        '-preset', 'medium',
-        '-crf', String(preset.crf),
-        '-maxrate', `${preset.videoBitrateKbps}k`,
-        '-bufsize', `${preset.videoBitrateKbps * 2}k`,
-        '-profile:v', 'high',
-        '-level', '4.2',
-        // yuv420p is the only pixel format every platform and phone decodes.
-        '-pix_fmt', 'yuv420p',
-      );
-      break;
-    case 'hevc':
-      args.push(
-        '-c:v', 'libx265',
-        '-preset', 'medium',
-        '-crf', String(preset.crf),
-        '-tag:v', 'hvc1',
-        '-pix_fmt', 'yuv420p',
-      );
-      break;
-    case 'vp9':
-      args.push(
-        '-c:v', 'libvpx-vp9',
-        '-crf', String(preset.crf),
-        '-b:v', '0',
-        '-row-mt', '1',
-        '-pix_fmt', 'yuv420p',
-      );
-      break;
+  // Image inputs first, so scene N is input N. One frame each — zoompan turns
+  // it into the scene's worth of frames.
+  for (const scene of scenes) {
+    args.push('-i', scene.image);
   }
 
-  args.push('-r', String(preset.fps));
-  // Two-second GOP: platforms re-encode, and short GOPs survive that better.
-  args.push('-g', String(preset.fps * 2));
-
-  if (preset.container === 'webm') {
-    args.push('-c:a', 'libopus', '-b:a', `${preset.audioBitrateKbps}k`);
-  } else {
-    args.push('-c:a', 'aac', '-b:a', `${preset.audioBitrateKbps}k`, '-ar', '48000', '-ac', '2');
+  // Then the narration audio, offset by the number of image inputs.
+  for (const scene of scenes) {
+    args.push('-i', scene.audio);
   }
 
-  if (preset.container === 'mp4' || preset.container === 'mov') {
-    // Front-load the index so the file starts playing before it fully downloads.
-    args.push('-movflags', '+faststart');
+  const audioBase = scenes.length;
+  const filters: string[] = [];
+
+  scenes.forEach((scene, index) => {
+    filters.push(kenBurns(index, sceneHold(scene.seconds, index === scenes.length - 1)));
+  });
+
+  const { filters: fades, label } = crossfades(scenes.length, scenes);
+  filters.push(...fades);
+
+  const videoOut = 'vout';
+  const caption = subtitleFile ? `subtitles=filename='${escapeFilterPath(subtitleFile)}'` : 'null';
+  filters.push(`[${label}]${caption}[${videoOut}]`);
+
+  // Narration: concatenated in order, resampled first so inputs that differ in
+  // sample rate (offline WAV versus provider MP3) can be joined at all.
+  const speechInputs = scenes
+    .map((_, index) => `[${audioBase + index}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=mono[s${index}]`)
+    .join(';');
+  filters.push(speechInputs);
+  filters.push(
+    `${scenes.map((_, i) => `[s${i}]`).join('')}concat=n=${scenes.length}:v=0:a=1[speech]`,
+  );
+
+  let audioOut = 'speech';
+
+  if (music) {
+    args.push('-f', 'lavfi', '-i', musicExpression(music, duration));
+    const musicInput = audioBase + scenes.length;
+
+    filters.push('[speech]asplit=2[sp_main][sp_side]');
+    filters.push(
+      `[${musicInput}:a]aformat=sample_fmts=fltp:channel_layouts=mono[music_raw]`,
+    );
+    // Ducking, so narration always sits on top of the bed rather than fighting
+    // it. A fixed low volume works until one scene is quiet and the next is
+    // loud; the sidechain follows the voice instead.
+    filters.push(
+      '[music_raw][sp_side]sidechaincompress=threshold=0.02:ratio=12:attack=20:release=400[music_ducked]',
+    );
+    filters.push('[sp_main][music_ducked]amix=inputs=2:duration=first:normalize=0[mixed]');
+    audioOut = 'mixed';
   }
 
-  return args;
+  // A consistent output level. Platforms normalise on ingest anyway, but they
+  // normalise *down*, so arriving quiet stays quiet.
+  filters.push(`[${audioOut}]loudnorm=I=-16:TP=-1.5:LRA=11[aout]`);
+
+  args.push(
+    '-filter_complex',
+    filters.join(';'),
+    '-map',
+    `[${videoOut}]`,
+    '-map',
+    '[aout]',
+    '-t',
+    duration.toFixed(3),
+    '-c:v',
+    'libx264',
+    '-preset',
+    'medium',
+    '-crf',
+    '20',
+    '-pix_fmt',
+    'yuv420p',
+    '-r',
+    String(FPS),
+    '-c:a',
+    'aac',
+    '-b:a',
+    '192k',
+    '-ar',
+    '44100',
+    // Puts the index at the front so the file starts playing before it has
+    // fully downloaded — which is how every one of these gets watched.
+    '-movflags',
+    '+faststart',
+    outFile,
+  );
+
+  return { args, duration };
 }

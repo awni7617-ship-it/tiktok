@@ -1,40 +1,24 @@
-import { assertProductionSecrets, config } from '@/server/config';
-import { logger } from '@/server/obs/logger';
-import { Worker } from './worker';
+import { runWorker } from './worker';
 
 /**
- * Worker entrypoint (`npm run worker`).
+ * Standalone worker process.
  *
- * Kept separate from the Worker class so the class stays testable without a
- * process lifecycle attached to it.
+ * Kept separate from the loop so the loop stays importable by the tests and by
+ * the dev server without either of them installing signal handlers.
  */
 
-const log = logger.child({ module: 'worker-entry' });
+const controller = new AbortController();
 
-async function main(): Promise<void> {
-  assertProductionSecrets();
-
-  const worker = new Worker({ concurrency: config.WORKER_CONCURRENCY });
-
-  const shutdown = (signal: string) => {
-    log.info(`received ${signal}, shutting down`);
-    void worker.stop().then(() => process.exit(0));
-  };
-
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-
-  // A crashed worker that keeps running is worse than one that restarts:
-  // its jobs stay leased until the timeout, delaying everything behind them.
-  process.on('unhandledRejection', (reason) => {
-    log.error('unhandled rejection; exiting', { reason });
-    void worker.stop(10_000).then(() => process.exit(1));
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    console.log(`[worker] ${signal} received, finishing current job`);
+    controller.abort();
   });
-
-  await worker.start();
 }
 
-main().catch((error) => {
-  log.error('worker failed to start', { error });
-  process.exit(1);
-});
+runWorker(controller.signal)
+  .then(() => process.exit(0))
+  .catch((error: unknown) => {
+    console.error('[worker] fatal:', error);
+    process.exit(1);
+  });
