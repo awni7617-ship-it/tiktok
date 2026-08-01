@@ -7,17 +7,15 @@ const compat = new FlatCompat({ baseDirectory: dirname(fileURLToPath(import.meta
 const config = [
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
   {
-    // Generated output: framework types, the OpenNext bundle, and the
-    // Wrangler-generated binding types. None of it is ours to fix.
+    // Generated output: the framework build, the assembled desktop server
+    // bundle and the packaged installers. None of it is ours to fix.
     ignores: [
       '.next/**',
       'dist/**',
-      '.open-next/**',
-      '.wrangler/**',
+      'release/**',
       'node_modules/**',
       'coverage/**',
       'next-env.d.ts',
-      'cloudflare-env.d.ts',
     ],
   },
   {
