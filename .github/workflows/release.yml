@@ -49,7 +49,11 @@ jobs:
       - run: npm ci
 
       # Builds the Next.js standalone server and copies in the static assets
-      # and the ffmpeg binaries, then wraps it in the Electron shell.
+      # and the ffmpeg binaries. Without this the packaged app has no server
+      # in it, and electron-builder would happily ship that.
+      - name: Build the server bundle
+        run: npm run desktop:bundle
+
       - name: Build installer
         run: npx electron-builder --config electron-builder.yml ${{ matrix.args }} --publish never
         env:

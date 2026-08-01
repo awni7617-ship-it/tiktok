@@ -2,6 +2,11 @@ appId: com.autoreel.app
 productName: Autoreel
 copyright: Autoreel
 
+# Fails the build when the server bundle is absent. `extraResources` only warns
+# about a missing source, which is how an installer containing no app at all
+# once got published.
+beforePack: scripts/before-pack.cjs
+
 directories:
   output: release
   buildResources: build
