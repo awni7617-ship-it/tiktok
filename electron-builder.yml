@@ -1,0 +1,57 @@
+appId: com.autoreel.app
+productName: Autoreel
+copyright: Autoreel
+
+directories:
+  output: release
+  buildResources: build
+
+# Only the shell goes in the archive. The server is an extra resource — see
+# below — and the source tree has no business being shipped at all.
+files:
+  - desktop/**/*
+  - package.json
+  - '!**/*.map'
+
+# The assembled Next.js server, placed at `resources/server`. Kept outside
+# `app.asar` deliberately: it reads its own build output and executes the
+# bundled ffmpeg, and neither is reliable from inside an archive.
+extraResources:
+  - from: dist/server
+    to: server
+
+# ffmpeg has to stay executable; some packers drop the bit on the way in.
+asarUnpack:
+  - '**/ffmpeg-static/**'
+  - '**/ffprobe-static/**'
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: Autoreel-Setup-${version}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  category: public.app-category.video
+  artifactName: Autoreel-${version}-${arch}.${ext}
+  # Nothing is signed or notarised, so Gatekeeper needs a right-click → Open on
+  # first launch. Signing is what makes that prompt go away, and it needs a
+  # paid developer account.
+  identity: null
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: AudioVideo
+  artifactName: Autoreel-${version}.${ext}
+
+publish: null

@@ -16,8 +16,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "npm run typecheck && npm run lint && npm run test"
+    "verify": "npm run typecheck && npm run lint && npm run test",
+    "desktop:bundle": "node scripts/bundle-desktop.mjs",
+    "desktop": "npm run desktop:bundle && electron .",
+    "desktop:build": "npm run desktop:bundle && electron-builder --config electron-builder.yml --publish never"
   },
+  "main": "desktop/main.js",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "clsx": "^2.1.1",
@@ -36,6 +40,8 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
     "eslint": "^9.17.0",
     "eslint-config-next": "^15.1.3",
     "tailwindcss": "^4.0.0",

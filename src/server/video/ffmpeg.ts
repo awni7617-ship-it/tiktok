@@ -13,19 +13,54 @@ import fs from 'node:fs/promises';
 let ffmpegPath: string | null | undefined;
 let ffprobePath: string | null | undefined;
 
-function fromPackage(name: 'ffmpeg-static' | 'ffprobe-static'): string | null {
+/**
+ * Point a path at the unpacked copy when it resolves inside an asar archive.
+ *
+ * Electron packs the app into `app.asar`, which the OS cannot execute a binary
+ * out of. electron-builder is configured to leave these two packages unpacked
+ * alongside it, so the archive path is rewritten to the real one on disk.
+ */
+function outsideAsar(filePath: string): string {
+  return filePath.includes('app.asar')
+    ? filePath.replace('app.asar', 'app.asar.unpacked')
+    : filePath;
+}
+
+/** Both packages export either the path itself or `{ path }`. */
+function binaryPathFrom(mod: unknown): string | null {
+  if (typeof mod === 'string') return outsideAsar(mod);
+  if (mod && typeof mod === 'object' && 'path' in mod) {
+    const p = (mod as { path?: unknown }).path;
+    if (typeof p === 'string') return outsideAsar(p);
+  }
+  return null;
+}
+
+/**
+ * These two requires must stay *literal*.
+ *
+ * `require(someVariable)` is not a specifier the bundler can match against
+ * `serverExternalPackages`, so it gets rewritten and then throws at runtime —
+ * which this function would swallow, leaving a build that silently believes
+ * ffmpeg is unavailable and refuses every render. Written out, each one is
+ * left external and resolves against the real `node_modules` at runtime.
+ *
+ * They are also loaded lazily rather than at module scope: resolving a native
+ * binary path is not something every importer of this file should pay for.
+ */
+function loadFfmpeg(): string | null {
   try {
-    // Resolved lazily: importing these at module load pulls a native path
-    // lookup into every process that touches this file, including the browser
-    // bundle's type-only imports.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require(name) as unknown;
-    if (typeof mod === 'string') return mod;
-    if (mod && typeof mod === 'object' && 'path' in mod) {
-      const p = (mod as { path?: unknown }).path;
-      if (typeof p === 'string') return p;
-    }
+    return binaryPathFrom(require('ffmpeg-static'));
+  } catch {
     return null;
+  }
+}
+
+function loadFfprobe(): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return binaryPathFrom(require('ffprobe-static'));
   } catch {
     return null;
   }
@@ -33,13 +68,13 @@ function fromPackage(name: 'ffmpeg-static' | 'ffprobe-static'): string | null {
 
 export function ffmpegBinary(): string | null {
   if (ffmpegPath !== undefined) return ffmpegPath;
-  ffmpegPath = process.env.FFMPEG_PATH?.trim() || fromPackage('ffmpeg-static') || null;
+  ffmpegPath = process.env.FFMPEG_PATH?.trim() || loadFfmpeg() || null;
   return ffmpegPath;
 }
 
 export function ffprobeBinary(): string | null {
   if (ffprobePath !== undefined) return ffprobePath;
-  ffprobePath = process.env.FFPROBE_PATH?.trim() || fromPackage('ffprobe-static') || null;
+  ffprobePath = process.env.FFPROBE_PATH?.trim() || loadFfprobe() || null;
   return ffprobePath;
 }
 

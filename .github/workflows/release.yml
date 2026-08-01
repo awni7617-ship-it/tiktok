@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - claude/project-phantom-content-platform-biowep
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+# The installers are attached to a rolling `latest` release, so this needs to
+# write to the repository's releases.
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should still publish the others rather than
+      # leaving the release page empty.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+            args: --linux
+          - os: macos-latest
+            name: macOS
+            args: --mac
+          - os: windows-latest
+            name: Windows
+            args: --win
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Builds the Next.js standalone server and copies in the static assets
+      # and the ffmpeg binaries, then wraps it in the Electron shell.
+      - name: Build installer
+        run: npx electron-builder --config electron-builder.yml ${{ matrix.args }} --publish never
+        env:
+          # Nothing is signed. Signing needs paid certificates for both
+          # platforms; without them, users get an unsigned-app warning on first
+          # launch, which is documented in the release notes.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.name }}
+          path: |
+            release/*.AppImage
+            release/*.dmg
+            release/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - run: ls -la artifacts
+
+      - name: Update the rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Autoreel — latest build
+          # Recreated on every run so the assets always match the tag rather
+          # than accumulating installers from older builds.
+          body: |
+            Automatic build of the latest commit.
+
+            | Your computer | File |
+            |---|---|
+            | Windows | `Autoreel-Setup-*.exe` |
+            | macOS | `Autoreel-*-arm64.dmg` (Apple Silicon) / `Autoreel-*-x64.dmg` (Intel) |
+            | Linux | `Autoreel-*.AppImage` |
+
+            ffmpeg is bundled, so rendering works with nothing installed. The
+            worker runs inside the app — there is no second process to start.
+
+            These builds are **not code-signed**. On first launch Windows needs
+            *More info → Run anyway*, and macOS needs *right-click → Open*.
+
+            No API keys are required. Every AI capability falls back to an
+            offline stand-in; add keys under Settings for real scripts, voice
+            and visuals.
+          files: artifacts/*
+          fail_on_unmatched_files: true

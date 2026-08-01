@@ -5,13 +5,40 @@ into a vertical video with captions and music, and posts it on a schedule.
 
 Runs on your own machine. No account, no database, no subscription.
 
+## Download it
+
+**[Get the app →](../../releases/latest)**
+
+| Your computer | File |
+|---|---|
+| Windows | `Autoreel-Setup-*.exe` |
+| macOS | `Autoreel-*-arm64.dmg` (Apple Silicon) · `Autoreel-*-x64.dmg` (Intel) |
+| Linux | `Autoreel-*.AppImage` |
+
+Download, open, use it. No Node, no terminal. **ffmpeg is bundled**, so
+rendering works with nothing installed, and the worker runs inside the app —
+there is no second process to start.
+
+The builds are not code-signed, so the first launch needs **More info → Run
+anyway** on Windows or **right-click → Open** on macOS. Signing is what makes
+that prompt go away and it needs paid certificates on both platforms.
+
+Videos and settings live in the app's own data folder — *File → Open Data
+Folder* shows you where.
+
+## Or run from source
+
 ```bash
 npm install
 npm run dev      # http://localhost:3000
 npm run worker   # in a second terminal — this is what renders
 ```
 
-**No API keys are needed to start.** Every AI capability has an offline
+From source the worker is a separate process on purpose: a render that pegs a
+core should not compete with the dev server's rebuilds. **Nothing renders
+without it running.**
+
+**No API keys are needed either way.** Every AI capability has an offline
 stand-in that produces real output, so the whole pipeline works end to end
 before you configure anything. Add keys in Settings when you want real scripts,
 voice and visuals.
@@ -173,12 +200,18 @@ without captions rather than not rendering.
 ## Commands
 
 ```bash
-npm run dev           # Next.js dev server
-npm run worker        # the render/publish loop — nothing happens without it
-npm run worker:dev    # same, with reload
-npm run verify        # typecheck + lint + test
-npm run build         # production build
+npm run dev            # Next.js dev server
+npm run worker         # the render/publish loop — nothing happens without it
+npm run worker:dev     # same, with reload
+npm run verify         # typecheck + lint + test
+npm run build          # production build
+
+npm run desktop        # build the server bundle and run the Electron shell
+npm run desktop:build  # installer for your platform, into release/
 ```
+
+`desktop:build` produces an installer for whichever platform you run it on;
+the release workflow runs all three on GitHub's runners.
 
 `/api/health` reports each dependency separately. The app is genuinely usable
 with pieces missing — without ffmpeg everything but rendering works, without
