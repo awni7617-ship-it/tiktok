@@ -1,6 +1,6 @@
 {
   "name": "autoreel",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Autoreel — pick a niche, get faceless short-form video on autopilot.",
   "engines": {
