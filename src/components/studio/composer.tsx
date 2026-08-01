@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, Mic, Sparkles, Wand2 } from 'lucide-react';
+import { Download, Film, Loader2, Mic, Sparkles, Wand2, X } from 'lucide-react';
 import type { ContentNiche, GeneratedContent, PlatformId } from '@/lib/types';
 import { NICHES, NICHE_LABELS } from '@/lib/niches';
 import { VOICES } from '@/lib/voices';
@@ -45,6 +45,48 @@ export function StudioComposer() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedContent | null>(null);
+  const [production, setProduction] = useState<Production | null>(null);
+
+  /**
+   * Turn the approved script into an actual video file.
+   *
+   * The generated package goes with the request, so what renders is what is
+   * on screen — including any edits — rather than a fresh generation that
+   * would quietly differ from what was reviewed.
+   */
+  const build = async (content: GeneratedContent) => {
+    setError(null);
+    setProduction({ id: null, status: 'running', fraction: 0, message: 'Starting', videoUrl: null });
+
+    try {
+      const response = await fetch('/api/studio/produce', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: prompt || content.title,
+          content,
+          niche,
+          platform,
+          targetDurationSec: duration,
+          tone: tone || undefined,
+          voiceId: faceless ? voiceId : undefined,
+        }),
+      });
+
+      const payload = (await response.json()) as { id?: string; error?: string };
+      if (!response.ok || !payload.id) throw new Error(payload.error ?? 'Could not start the render');
+
+      await pollProduction(payload.id, setProduction);
+    } catch (caught) {
+      setProduction(null);
+      setError(caught instanceof Error ? caught.message : 'The render failed');
+    }
+  };
+
+  const cancelBuild = async () => {
+    if (production?.id) await fetch(`/api/studio/produce/${production.id}`, { method: 'DELETE' });
+    setProduction(null);
+  };
 
   const generate = async () => {
     if (prompt.trim().length < 8) {
@@ -198,7 +240,15 @@ export function StudioComposer() {
         <div className="space-y-4">
           {loading ? <GeneratingState /> : null}
           {!loading && !result ? <IdleState /> : null}
-          {!loading && result ? <GeneratedPackage content={result} faceless={faceless} /> : null}
+          {production ? <ProductionPanel production={production} onCancel={cancelBuild} /> : null}
+          {!loading && result ? (
+            <GeneratedPackage
+              content={result}
+              faceless={faceless}
+              building={production?.status === 'running'}
+              onBuild={() => void build(result)}
+            />
+          ) : null}
         </div>
       </div>
     </div>
@@ -247,7 +297,17 @@ function GeneratingState() {
   );
 }
 
-function GeneratedPackage({ content, faceless }: { content: GeneratedContent; faceless: boolean }) {
+function GeneratedPackage({
+  content,
+  faceless,
+  building,
+  onBuild,
+}: {
+  content: GeneratedContent;
+  faceless: boolean;
+  building: boolean;
+  onBuild: () => void;
+}) {
   const [title, setTitle] = useState(content.title);
   const [hook, setHook] = useState(content.hook);
 
@@ -392,12 +452,166 @@ function GeneratedPackage({ content, faceless }: { content: GeneratedContent; fa
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2 border-t border-[var(--border-subtle)] pt-4">
-          <Button variant="primary" icon={<Sparkles className="size-4" />}>
-            Build this video
+          <Button
+            variant="primary"
+            icon={<Film className="size-4" />}
+            loading={building}
+            onClick={onBuild}
+          >
+            {building ? 'Building…' : 'Build this video'}
           </Button>
           <Button variant="ghost">Save as draft</Button>
         </div>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Producing a video
+// ---------------------------------------------------------------------------
+
+interface Production {
+  id: string | null;
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  fraction: number;
+  message: string;
+  videoUrl: string | null;
+  durationSec?: number;
+  error?: string;
+}
+
+/**
+ * Follow a production to completion.
+ *
+ * Polling rather than a socket: a render is minutes long and its progress
+ * changes a few times a second at most, so a request every second costs
+ * nothing and survives sleep, network changes and a reloaded page.
+ */
+async function pollProduction(id: string, onUpdate: (production: Production) => void): Promise<void> {
+  for (;;) {
+    const response = await fetch(`/api/studio/produce/${id}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Lost track of the render');
+
+    const job = (await response.json()) as {
+      status: Production['status'];
+      progress: { fraction: number; message: string };
+      videoUrl: string | null;
+      durationSec?: number;
+      error?: string;
+    };
+
+    onUpdate({
+      id,
+      status: job.status,
+      fraction: job.progress.fraction,
+      message: job.progress.message,
+      videoUrl: job.videoUrl,
+      durationSec: job.durationSec,
+      error: job.error,
+    });
+
+    if (job.status !== 'running') {
+      if (job.status === 'failed') throw new Error(job.error ?? 'The render failed');
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+function ProductionPanel({
+  production,
+  onCancel,
+}: {
+  production: Production;
+  onCancel: () => void;
+}) {
+  const percent = Math.round(production.fraction * 100);
+
+  if (production.status === 'done' && production.videoUrl) {
+    return (
+      <Card className="space-y-4">
+        <SectionHeading
+          title="Your video"
+          description={
+            production.durationSec
+              ? `${humanDuration(production.durationSec)} · 1080 × 1920 · ready to post`
+              : 'Ready to post'
+          }
+        />
+
+        {/* Vertical video in a fixed-height frame: letting a 9:16 file size
+            itself pushes everything else off the screen. */}
+        <video
+          src={production.videoUrl}
+          controls
+          playsInline
+          className="mx-auto max-h-[70vh] rounded-xl border border-[var(--border-subtle)] bg-black"
+        />
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="primary"
+            icon={<Download className="size-4" />}
+            onClick={() => {
+              const link = document.createElement('a');
+              link.href = production.videoUrl as string;
+              link.download = 'phantom-video.mp4';
+              link.click();
+            }}
+          >
+            Download
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
+            Close
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  if (production.status === 'failed' || production.status === 'cancelled') {
+    return (
+      <Card className="space-y-3">
+        <Notice tone={production.status === 'failed' ? 'danger' : 'neutral'}>
+          {production.status === 'failed'
+            ? (production.error ?? 'The render failed.')
+            : 'Render cancelled.'}
+        </Notice>
+        <Button variant="ghost" onClick={onCancel}>
+          Dismiss
+        </Button>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="space-y-4">
+      <SectionHeading title="Building your video" description={production.message} />
+
+      <div
+        className="h-2 overflow-hidden rounded-full bg-[var(--surface-hover)]"
+        role="progressbar"
+        aria-valuenow={percent}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Render progress"
+      >
+        <div
+          className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
+          style={{ width: `${Math.max(percent, 2)}%` }}
+        />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-[var(--text-muted)]">
+          {percent}% · narration, visuals and captions are generated before the render starts
+        </p>
+        <Button variant="ghost" size="sm" icon={<X className="size-4" />} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </Card>
   );
 }

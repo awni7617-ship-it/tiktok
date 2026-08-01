@@ -55,6 +55,10 @@ async function startServer({ serverDir, env = {}, timeoutMs = 60_000 } = {}) {
     cwd: dir,
     env: {
       ...process.env,
+      // The bundled ffmpeg, so rendering works without the user installing
+      // anything. Overridable, for anyone who wants their own build.
+      FFMPEG_PATH: process.env.FFMPEG_PATH || bundledBinary(dir, 'ffmpeg'),
+      FFPROBE_PATH: process.env.FFPROBE_PATH || bundledBinary(dir, 'ffprobe'),
       ...env,
       NODE_ENV: 'production',
       PORT: String(port),
@@ -101,4 +105,10 @@ function stop(child) {
   setTimeout(() => child.killed || child.kill('SIGKILL'), 3000).unref?.();
 }
 
-module.exports = { startServer, freePort, canConnect };
+/** Path to a binary shipped inside the bundle, if it is there. */
+function bundledBinary(serverDir, name) {
+  const candidate = path.join(serverDir, 'bin', process.platform === 'win32' ? `${name}.exe` : name);
+  return require('node:fs').existsSync(candidate) ? candidate : name;
+}
+
+module.exports = { startServer, freePort, canConnect, bundledBinary };

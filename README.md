@@ -74,7 +74,7 @@ anything. `/settings` shows which provider is actually serving each capability.
 | **AI editor** | Silence and filler removal, false-start detection, pacing retiming, engagement scoring, clip variations, auto-reframe with subject tracking, animated captions, measurement-driven audio and video cleanup |
 | **Render pipeline** | ffmpeg filter-graph compiler, trim/concat with retiming, animated crop, motion, burned-in ASS captions, sidechain-ducked music, multi-preset export |
 | **Content generator** | Prompt or script → title, hook, script, scenes, B-roll queries, description, hashtags, CTA and thumbnail concepts, across 16 content types |
-| **Faceless studio** | AI narration with voice selection, stock/generated visuals, scene timeline |
+| **Faceless studio** | Idea → finished `.mp4`: script, narration, visuals, Ken Burns motion, crossfades, burned-in captions, ducked music. Runs in-app with bundled ffmpeg |
 | **Viral optimizer** | Explainable rules over the real measurements, plus an AI review pass; every suggestion carries its evidence and can be applied, edited or dismissed |
 | **Publishing** | OAuth 2.0 + PKCE connections, encrypted token storage, per-platform validation, upload adapters for TikTok, YouTube, Instagram and Facebook |
 | **Planner** | Drag-and-drop calendar, queue management, posting-time recommendations, cadence analysis |

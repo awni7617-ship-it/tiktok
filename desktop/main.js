@@ -195,7 +195,14 @@ app.whenReady().then(async () => {
   );
 
   try {
-    server = await startServer({ serverDir });
+    // The app directory is read-only once installed, so renders and their
+    // intermediate assets go to the per-user data directory. Without this,
+    // producing a video fails at the first file write.
+    const renders = path.join(app.getPath('userData'), 'renders');
+    server = await startServer({
+      serverDir,
+      env: { PHANTOM_OUTPUT_DIR: renders, MEDIA_TMP_DIR: renders },
+    });
     createWindow(server.url);
 
     // After the window, never before it: a slow or unreachable GitHub must

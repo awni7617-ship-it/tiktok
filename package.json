@@ -2,7 +2,7 @@
   "name": "phantom",
   "version": "0.1.0",
   "private": true,
-  "description": "Phantom \u2014 AI content creation platform for short-form video creators.",
+  "description": "Phantom — AI content creation platform for short-form video creators.",
   "engines": {
     "node": ">=20.11"
   },
@@ -48,6 +48,8 @@
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^6.1.0",
     "clsx": "^2.1.1",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
     "jose": "^5.9.6",
     "lucide-react": "^0.469.0",
     "next": "^15.1.3",

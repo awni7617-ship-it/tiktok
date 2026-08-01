@@ -15,11 +15,17 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
+
+/** Resolved lazily: these packages download a platform binary on install. */
+const ffmpegPath = () => require('ffmpeg-static');
+const ffprobePath = () => require('ffprobe-static').path;
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const name = `phantom-editor-${pkg.version}`;
 const dist = join(root, 'dist');
@@ -71,6 +77,26 @@ if (existsSync(join(root, 'public'))) {
 // Migrations travel with the build: a downloaded copy has to be able to
 // create its own database without the repository.
 cpSync(join(root, 'prisma'), join(stage, 'prisma'), { recursive: true });
+
+// ffmpeg travels with the build too. It is the difference between an app that
+// can make a video and one that can only describe one — and asking a creator
+// to install a native binary by hand is exactly the kind of step that ends
+// with "nothing works".
+const binDir = join(stage, 'bin');
+mkdirSync(binDir, { recursive: true });
+
+for (const [name, from] of [
+  ['ffmpeg', ffmpegPath()],
+  ['ffprobe', ffprobePath()],
+]) {
+  if (!from || !existsSync(from)) {
+    console.error(`Missing ${name} binary; the packaged app could not render video.`);
+    process.exit(1);
+  }
+  const to = join(binDir, name + (from.endsWith('.exe') ? '.exe' : ''));
+  cpSync(from, to);
+  chmodSync(to, 0o755);
+}
 cpSync(join(root, '.env.example'), join(stage, '.env.example'));
 
 // --- Prune ------------------------------------------------------------------
