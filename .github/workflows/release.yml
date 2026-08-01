@@ -80,6 +80,15 @@ jobs:
 
       - run: ls -la artifacts
 
+      # Assets are only replaced when a filename matches, so a rename would
+      # otherwise leave the previous build's installers sitting alongside the
+      # new ones. Deleting the release first means what is published is exactly
+      # what this run built.
+      - name: Clear the previous release
+        run: gh release delete latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Update the rolling release
         uses: softprops/action-gh-release@v2
         with:
