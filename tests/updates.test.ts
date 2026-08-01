@@ -1,5 +1,17 @@
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { checkForUpdate, compareVersions, isNewer, parseVersionInfo } from '../desktop/updates.js';
+import {
+  assetNameFor,
+  checkForUpdate,
+  compareVersions,
+  downloadUpdate,
+  isNewer,
+  parseChecksums,
+  parseVersionInfo,
+} from '../desktop/updates.js';
 
 /**
  * The update check is the one piece of the desktop app that decides, on its
@@ -88,5 +100,106 @@ describe('checkForUpdate', () => {
       fetchImpl: respond('Not Found', false),
     });
     expect(result.status).toBe('unknown');
+  });
+});
+
+describe('installer selection', () => {
+  it('picks the right file for each platform', () => {
+    expect(assetNameFor({ platform: 'win32', arch: 'x64', version: '0.1.12' })).toBe(
+      'Phantom-Setup-0.1.12.exe',
+    );
+    expect(assetNameFor({ platform: 'darwin', arch: 'arm64', version: '0.1.12' })).toBe(
+      'Phantom-0.1.12-arm64.dmg',
+    );
+    expect(assetNameFor({ platform: 'darwin', arch: 'x64', version: '0.1.12' })).toBe(
+      'Phantom-0.1.12.dmg',
+    );
+    expect(assetNameFor({ platform: 'linux', arch: 'x64', version: '0.1.12' })).toBe(
+      'Phantom-0.1.12.AppImage',
+    );
+  });
+
+  it('parses sha256sum output', () => {
+    const table = parseChecksums(
+      `${'a'.repeat(64)}  Phantom-0.1.12.AppImage\n${'b'.repeat(64)}  SHA256SUMS.txt\n`,
+    );
+    expect(table.get('Phantom-0.1.12.AppImage')).toBe('a'.repeat(64));
+    expect(table.size).toBe(2);
+  });
+});
+
+describe('downloadUpdate', () => {
+  const payload = Buffer.from('pretend installer bytes');
+  const digest = createHash('sha256').update(payload).digest('hex');
+
+  const server = (body: Buffer, hash: string): typeof fetch =>
+    (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('SHA256SUMS.txt')) {
+        return new Response(`${hash}  Phantom-0.1.12.AppImage\n`);
+      }
+      return new Response(new Uint8Array(body), {
+        headers: { 'content-length': String(body.length) },
+      });
+    }) as unknown as typeof fetch;
+
+  it('writes the installer and reports progress', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'phantom-update-'));
+    const progress: number[] = [];
+
+    const result = await downloadUpdate({
+      version: '0.1.12',
+      targetDir: dir,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: server(payload, digest),
+      onProgress: (fraction) => progress.push(fraction),
+    });
+
+    expect(result.asset).toBe('Phantom-0.1.12.AppImage');
+    expect(await readFile(result.path)).toEqual(payload);
+    expect(progress.at(-1)).toBe(1);
+
+    // Downloaded AppImages are not executable, which makes a double-click
+    // silently do nothing.
+    const mode = (await stat(result.path)).mode & 0o777;
+    expect(mode & 0o111).toBeGreaterThan(0);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('deletes a file whose checksum does not match, and refuses to return it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'phantom-update-'));
+    const tampered = Buffer.from('malicious installer bytes');
+
+    await expect(
+      downloadUpdate({
+        version: '0.1.12',
+        targetDir: dir,
+        platform: 'linux',
+        arch: 'x64',
+        // Serves the tampered payload while advertising the good hash.
+        fetchImpl: server(tampered, digest),
+      }),
+    ).rejects.toThrow(/checksum/i);
+
+    await expect(stat(join(dir, 'Phantom-0.1.12.AppImage'))).rejects.toThrow();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('refuses to download an asset with no published checksum', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'phantom-update-'));
+
+    await expect(
+      downloadUpdate({
+        version: '0.1.12',
+        targetDir: dir,
+        platform: 'win32',
+        arch: 'x64',
+        fetchImpl: server(payload, digest),
+      }),
+    ).rejects.toThrow(/no published checksum/i);
+
+    await rm(dir, { recursive: true, force: true });
   });
 });

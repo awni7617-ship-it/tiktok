@@ -11,8 +11,9 @@
  * tested without a network or a window.
  */
 
-const VERSION_URL =
-  'https://github.com/awni7617-ship-it/tiktok/releases/download/latest/version.json';
+const DOWNLOAD_BASE = 'https://github.com/awni7617-ship-it/tiktok/releases/download/latest';
+const VERSION_URL = `${DOWNLOAD_BASE}/version.json`;
+const CHECKSUMS_URL = `${DOWNLOAD_BASE}/SHA256SUMS.txt`;
 const RELEASES_URL = 'https://github.com/awni7617-ship-it/tiktok/releases/latest';
 
 /**
@@ -105,11 +106,114 @@ async function checkForUpdate({
   }
 }
 
+/**
+ * Which file this computer needs.
+ *
+ * The names come from electron-builder's defaults, so they are derived rather
+ * than listed — a version bump must not require editing this.
+ */
+function assetNameFor({ platform = process.platform, arch = process.arch, version }) {
+  if (platform === 'win32') return `Phantom-Setup-${version}.exe`;
+  if (platform === 'darwin') {
+    return arch === 'arm64' ? `Phantom-${version}-arm64.dmg` : `Phantom-${version}.dmg`;
+  }
+  return `Phantom-${version}.AppImage`;
+}
+
+/** Parse `sha256sum` output into a filename → hash map. */
+function parseChecksums(text) {
+  const table = new Map();
+  for (const line of String(text ?? '').split('\n')) {
+    const match = /^([0-9a-f]{64})\s+\*?(.+?)\s*$/i.exec(line.trim());
+    if (match?.[1] && match[2]) table.set(match[2], match[1].toLowerCase());
+  }
+  return table;
+}
+
+/**
+ * Download the installer for this computer and verify it.
+ *
+ * The checksum check is not ceremony: this file is about to be executed with
+ * the user's privileges, and the only thing standing between "downloaded over
+ * a hostile network" and "ran the installer" is this comparison. A mismatch
+ * deletes the file and fails loudly.
+ */
+async function downloadUpdate({
+  version,
+  targetDir,
+  platform = process.platform,
+  arch = process.arch,
+  fetchImpl = globalThis.fetch,
+  onProgress,
+  base = DOWNLOAD_BASE,
+  checksumsUrl = CHECKSUMS_URL,
+} = {}) {
+  const { createWriteStream, promises: fs } = require('node:fs');
+  const { createHash } = require('node:crypto');
+  const { pipeline } = require('node:stream/promises');
+  const { Readable } = require('node:stream');
+  const path = require('node:path');
+
+  const asset = assetNameFor({ platform, arch, version });
+  const destination = path.join(targetDir, asset);
+
+  const checksumResponse = await fetchImpl(checksumsUrl, { cache: 'no-store' });
+  if (!checksumResponse.ok) {
+    throw new Error(`Could not fetch checksums (HTTP ${checksumResponse.status})`);
+  }
+  const expected = parseChecksums(await checksumResponse.text()).get(asset);
+  if (!expected) {
+    throw new Error(`No published checksum for ${asset}; refusing to run an unverified installer`);
+  }
+
+  const response = await fetchImpl(`${base}/${asset}`, { cache: 'no-store' });
+  if (!response.ok || !response.body) {
+    throw new Error(`Download failed (HTTP ${response.status})`);
+  }
+
+  const total = Number(response.headers?.get?.('content-length') ?? 0);
+  const hash = createHash('sha256');
+  let received = 0;
+
+  // Hashing happens as a pipeline stage rather than a `data` listener: a
+  // listener switches the stream to flowing mode and consumes the bytes
+  // before the file writer is attached, which writes an empty file.
+  const { Transform } = require('node:stream');
+  const meter = new Transform({
+    transform(chunk, _encoding, callback) {
+      hash.update(chunk);
+      received += chunk.length;
+      if (total > 0) onProgress?.(Math.min(received / total, 1));
+      callback(null, chunk);
+    },
+  });
+
+  await fs.mkdir(targetDir, { recursive: true });
+  await pipeline(Readable.fromWeb(response.body), meter, createWriteStream(destination));
+
+  const actual = hash.digest('hex');
+  if (actual !== expected) {
+    await fs.rm(destination, { force: true });
+    throw new Error('Downloaded file did not match its published checksum, so it was deleted');
+  }
+
+  // The AppImage arrives without the executable bit, which makes a
+  // double-click do nothing at all.
+  if (platform === 'linux') await fs.chmod(destination, 0o755);
+
+  return { path: destination, asset, bytes: received };
+}
+
 module.exports = {
   compareVersions,
   isNewer,
   parseVersionInfo,
   checkForUpdate,
+  assetNameFor,
+  parseChecksums,
+  downloadUpdate,
   VERSION_URL,
+  CHECKSUMS_URL,
+  DOWNLOAD_BASE,
   RELEASES_URL,
 };

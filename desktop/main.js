@@ -10,7 +10,7 @@
 const { app, BrowserWindow, dialog, shell, Menu, Notification } = require('electron');
 const path = require('node:path');
 const { startServer } = require('./server');
-const { checkForUpdate } = require('./updates');
+const { checkForUpdate, downloadUpdate, RELEASES_URL } = require('./updates');
 
 // Packaged, the bundle is copied in as an extra resource; unpackaged, it is
 // wherever `npm run package:editor` last wrote it.
@@ -60,6 +60,69 @@ function createWindow(url) {
 const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * Fetch the installer for this computer, then hand it to the OS.
+ *
+ * Progress goes on the taskbar/dock icon rather than in a modal, so the
+ * download does not take the app hostage — a 100 MB transfer on a slow line
+ * should not stop someone editing.
+ *
+ * The app deliberately does not install silently. These builds are unsigned,
+ * so a silent replacement would be an unsigned binary swapping itself in
+ * without the user ever seeing it — the OS's own installer prompt is the
+ * check that keeps that honest.
+ */
+async function downloadAndOffer(version) {
+  const target = app.getPath('downloads');
+
+  try {
+    window?.setProgressBar(0);
+
+    const { path: file } = await downloadUpdate({
+      version,
+      targetDir: target,
+      onProgress: (fraction) => window?.setProgressBar(fraction),
+    });
+
+    window?.setProgressBar(-1);
+
+    const isLinux = process.platform === 'linux';
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      title: 'Update downloaded',
+      message: `Phantom ${version} is ready to install.`,
+      detail: isLinux
+        ? `Saved to ${file}\n\nIt replaces the AppImage you are running now — quit Phantom first, then swap the file.`
+        : `Saved to ${file}\n\nInstalling closes Phantom. Your projects are not affected.`,
+      buttons: isLinux ? ['Show in Folder', 'Later'] : ['Install now', 'Show in Folder', 'Later'],
+      defaultId: 0,
+      cancelId: isLinux ? 1 : 2,
+    });
+
+    if (!isLinux && response === 0) {
+      // Quit first: on Windows the installer cannot replace files that a
+      // running process holds open.
+      shell.openPath(file);
+      app.quit();
+      return;
+    }
+    if (response === (isLinux ? 0 : 1)) shell.showItemInFolder(file);
+  } catch (error) {
+    window?.setProgressBar(-1);
+
+    const { response } = await dialog.showMessageBox({
+      type: 'error',
+      title: 'Download failed',
+      message: 'Phantom could not download the update.',
+      detail: `${error instanceof Error ? error.message : String(error)}\n\nYou can download it from the releases page instead.`,
+      buttons: ['Open Releases Page', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) shell.openExternal(RELEASES_URL);
+  }
+}
+
+/**
  * Look for a newer build and offer it.
  *
  * Automatic checks stay quiet unless there is something to say — a dialog on
@@ -77,7 +140,9 @@ async function checkUpdates({ manual = false } = {}) {
         title: 'Phantom update available',
         body: `Version ${result.latest.version} is ready to download.`,
       });
-      notification.on('click', () => shell.openExternal(result.releasesUrl));
+      // Clicking the notification starts the download rather than opening a
+      // browser — the notification *is* the update button.
+      notification.on('click', () => void downloadAndOffer(result.latest.version));
       notification.show();
     }
 
@@ -85,12 +150,12 @@ async function checkUpdates({ manual = false } = {}) {
       type: 'info',
       title: 'Update available',
       message: `Phantom ${result.latest.version} is available.`,
-      detail: `You are running ${app.getVersion()}.\n\nDownloads open in your browser. Install it over this copy — your work is not affected.`,
+      detail: `You are running ${app.getVersion()}.\n\nPhantom can download it for you now. It is a few hundred megabytes, and progress shows on the app icon — you can keep working while it runs.`,
       buttons: ['Download', 'Later'],
       defaultId: 0,
       cancelId: 1,
     });
-    if (response === 0) shell.openExternal(result.releasesUrl);
+    if (response === 0) await downloadAndOffer(result.latest.version);
     return;
   }
 
@@ -122,7 +187,7 @@ app.whenReady().then(async () => {
           { type: 'separator' },
           {
             label: 'Open Releases Page',
-            click: () => shell.openExternal(require('./updates').RELEASES_URL),
+            click: () => shell.openExternal(RELEASES_URL),
           },
         ],
       },

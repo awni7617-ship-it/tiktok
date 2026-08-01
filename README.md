@@ -19,13 +19,17 @@ Download, open, use it. No Node, no terminal, no database. The build is not
 code-signed, so the first launch needs **More info → Run anyway** on Windows
 or **right-click → Open** on macOS.
 
-**Updates.** The app checks for a newer build on launch and every six hours,
-and tells you when one exists — a notification, then a dialog with a Download
-button. *Help → Check for Updates…* asks on demand. It points at the download
-rather than installing silently: an unsigned app cannot self-install on
-macOS, and an updater that works on two platforms out of three is worse than
-one that behaves the same everywhere. Signing the builds is what would make
-one-click updates possible.
+**Updates.** The app checks for a newer build on launch and every six hours.
+When one exists it says so — a notification, then a dialog — and clicking
+Download fetches the right installer for your machine inside the app, with
+progress on the dock or taskbar icon. The file is checked against its
+published SHA-256 before being offered, and a mismatch deletes it rather than
+handing you something to run. *Help → Check for Updates…* asks on demand.
+
+The final install is the OS installer, not a silent swap: these builds are
+unsigned, and a silent self-replacement would be an unsigned binary
+installing itself with nothing visible to the user. Signing the builds is
+what would make that step disappear.
 
 Also published there: `phantom-editor-<version>.zip`, the same app without a
 window — a portable server for running it headless or on a machine that
